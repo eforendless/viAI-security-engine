@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -10,12 +10,12 @@
     "dev:electron": "wait-on tcp:5173 && set VITE_DEV_SERVER_URL=http://127.0.0.1:5173 && electron .",
     "desktop": "concurrently --kill-others-on-fail \"npm:dev:renderer\" \"npm:dev:electron\"",
     "build": "tsc -b && vite build && tsc -p tsconfig.electron.json && node -e \"require('fs').copyFileSync('electron/package.json', 'dist-electron/package.json')\"",
+    "package:win": "npm run build && electron-builder --win nsis --x64",
     "start": "npm run build && electron .",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
-    "electron": "^43.2.0",
     "framer-motion": "^12.43.0",
     "lucide-react": "^1.28.0",
     "react": "^19.2.8",
@@ -33,6 +33,8 @@
     "@vitejs/plugin-react": "^6.0.4",
     "autoprefixer": "^10.5.4",
     "concurrently": "^10.0.4",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.0.12",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
@@ -43,5 +45,26 @@
     "typescript-eslint": "^8.65.0",
     "vite": "^8.2.0",
     "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.eforendless.viai",
+    "productName": "viAI Security Engine",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
   }
 }

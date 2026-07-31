@@ -7,7 +7,21 @@ import type { EventManager } from "../core/eventManager.js";
 const execFileAsync = promisify(execFile);
 
 export class UsbMonitor {
+  private timer?: NodeJS.Timeout;
+
   constructor(private readonly eventManager: EventManager, private readonly maxFilesPerDrive = 10_000) {}
+
+  start(intervalMilliseconds = 60_000): void {
+    if (this.timer) return;
+    void this.scanConnectedDrives();
+    this.timer = setInterval(() => void this.scanConnectedDrives(), intervalMilliseconds);
+  }
+
+  stop(): void {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = undefined;
+  }
 
   async scanConnectedDrives(): Promise<void> {
     for (const drive of await this.getRemovableDrives()) {

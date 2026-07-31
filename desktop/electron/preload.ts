@@ -8,4 +8,7 @@ contextBridge.exposeInMainWorld("viai", {
   systemRoots: () => ipcRenderer.invoke("scan:system-roots") as Promise<string[]>,
   analyzeFile: (filePath: string) => ipcRenderer.invoke("engine:analyze", filePath) as Promise<unknown>,
   probeEngine: () => ipcRenderer.invoke("engine:probe") as Promise<boolean>,
+  engineEvents: () => ipcRenderer.invoke("engine:events") as Promise<unknown[]>,
+  monitoringStatus: () => ipcRenderer.invoke("engine:monitoring") as Promise<unknown>,
+  setMonitoring: (updates: Record<string, boolean>) => ipcRenderer.invoke("engine:set-monitoring", updates) as Promise<unknown>,
 });

@@ -77,8 +77,15 @@ ipcMain.handle("engine:analyze", async (_event, filePath: string) => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ path: filePath }),
   });
-  const body = await response.json() as Record<string, unknown>;
-  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Engine analysis failed");
+  const responseText = await response.text();
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(responseText) as Record<string, unknown>;
+  } catch {
+    const detail = responseText.trim() || "empty response body";
+    throw new Error(`Engine returned an invalid response (${response.status}): ${detail}`);
+  }
+  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
   return body;
 });
 
@@ -89,6 +96,30 @@ ipcMain.handle("engine:probe", async () => {
   } catch {
     return false;
   }
+});
+
+ipcMain.handle("engine:events", async () => {
+  const response = await fetch("http://127.0.0.1:4117/events");
+  if (!response.ok) throw new Error(`Engine events request failed (${response.status})`);
+  const body = await response.json() as { analyses?: unknown[] };
+  return body.analyses ?? [];
+});
+
+ipcMain.handle("engine:monitoring", async () => {
+  const response = await fetch("http://127.0.0.1:4117/monitoring");
+  if (!response.ok) throw new Error(`Engine monitoring request failed (${response.status})`);
+  return response.json();
+});
+
+ipcMain.handle("engine:set-monitoring", async (_event, updates: Record<string, boolean>) => {
+  const response = await fetch("http://127.0.0.1:4117/monitoring", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  const body = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine monitoring update failed (${response.status})`);
+  return body;
 });
 
 async function removableDrives(): Promise<string[]> {

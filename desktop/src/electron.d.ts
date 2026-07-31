@@ -10,6 +10,9 @@ declare global {
       systemRoots(): Promise<string[]>;
       analyzeFile(filePath: string): Promise<unknown>;
       probeEngine(): Promise<boolean>;
+      engineEvents(): Promise<unknown[]>;
+      monitoringStatus(): Promise<unknown>;
+      setMonitoring(updates: Record<string, boolean>): Promise<unknown>;
     };
   }
 }

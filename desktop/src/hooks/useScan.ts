@@ -13,19 +13,29 @@ export function useScan() {
     }
     useSecurityStore.getState().beginScan(mode, target, paths.length);
     let investigationCount = 0;
-    for (let index = 0; index < paths.length; index += 1) {
-      while (useSecurityStore.getState().scan.paused) await wait(200);
-      if (useSecurityStore.getState().scan.cancelled) break;
-      const filePath = paths[index];
-      try {
-        const result = await analyzeFile(filePath);
-        useSecurityStore.getState().addHistory(result.analysis);
-        if (result.riskScore > 25) investigationCount += 1;
-      } catch {
-        toast.error(`Could not analyze ${filePath.split(/[\\/]/).pop()}`, { id: `failure-${index}` });
+    let nextIndex = 0;
+    let completed = 0;
+    const settings = useSecurityStore.getState();
+    const concurrency = settings.performanceMode === "quiet" ? 1 : settings.performanceMode === "balanced" ? Math.min(settings.threadCount, 4) : settings.threadCount;
+    const analyzeNext = async () => {
+      while (true) {
+        while (useSecurityStore.getState().scan.paused) await wait(200);
+        if (useSecurityStore.getState().scan.cancelled || nextIndex >= paths.length) return;
+        const index = nextIndex;
+        nextIndex += 1;
+        const filePath = paths[index];
+        try {
+          const result = await analyzeFile(filePath);
+          useSecurityStore.getState().addHistory(result.analysis);
+          if (result.riskScore > 25) investigationCount += 1;
+        } catch {
+          toast.error(`Could not analyze ${filePath.split(/[\\/]/).pop()}`, { id: `failure-${index}` });
+        }
+        completed += 1;
+        useSecurityStore.getState().setProgress(completed, filePath, investigationCount);
       }
-      useSecurityStore.getState().setProgress(index + 1, filePath, investigationCount);
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, paths.length) }, () => analyzeNext()));
     const current = useSecurityStore.getState().scan;
     useSecurityStore.getState().finishScan();
     if (!current.cancelled) toast.success(`Scan complete: ${investigationCount} item${investigationCount === 1 ? "" : "s"} need investigation.`);

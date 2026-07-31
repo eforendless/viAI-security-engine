@@ -123,11 +123,12 @@ import { lazy, Suspense, useEffect } from "react";
 import { AnimatePresence } from "framer-motion";
 import { HashRouter, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
+import { getEngineEvents, getMonitoringStatus, probeEngine } from "./api/engineClient";
 import { AppShell } from "./layout/AppShell";
 import { Skeleton } from "./components/ui";
 import { useSecurityStore } from "./store/securityStore";
 
-const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Dashboard = lazy(() => import("./pages/DashboardLive"));
 const QuickScan = lazy(() => import("./pages/QuickScan"));
 const FullScan = lazy(() => import("./pages/FullScan"));
 const Realtime = lazy(() => import("./pages/Realtime"));
@@ -140,7 +141,28 @@ function AppRoutes() {
   const location = useLocation();
   const darkMode = useSecurityStore((state) => state.darkMode);
   useEffect(() => { document.documentElement.dataset.theme = darkMode ? "dark" : "light"; }, [darkMode]);
-  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><Skeleton className="loading-block" /></div>}><Routes location={location} key={location.pathname}><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/history" element={<History />} /><Route path="/details" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /></Route></Routes></Suspense></AnimatePresence>;
+  useEffect(() => {
+    let cancelled = false;
+    const syncEngine = async () => {
+      const online = await probeEngine();
+      if (cancelled) return;
+      const store = useSecurityStore.getState();
+      store.setEngineOnline(online);
+      if (!online) return;
+      try {
+        const [analyses, monitoring] = await Promise.all([getEngineEvents(), getMonitoringStatus()]);
+        if (cancelled) return;
+        analyses.forEach(store.addHistory);
+        store.setMonitoringStatus(monitoring);
+      } catch {
+        store.setEngineOnline(false);
+      }
+    };
+    void syncEngine();
+    const timer = window.setInterval(() => void syncEngine(), 3_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><Skeleton className="loading-block" /></div>}><Routes location={location} key={location.pathname}><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /></Route></Routes></Suspense></AnimatePresence>;
 }
 
 function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif" } }} /></HashRouter>; }

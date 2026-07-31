@@ -2,7 +2,7 @@
 
 ## Foundation: delivered
 
-- Static local analysis, JSON rules, loopback API, local reputation cache, and test coverage.
+- Static local analysis, compiled VRL rules, loopback API, local reputation cache, and test coverage.
 - Conservative PE parsing, entropy/packer signals, Authenticode interrogation, and bounded removable-drive scanning.
 
 ## Production hardening

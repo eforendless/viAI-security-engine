@@ -1,0 +1,16 @@
+rule SuspiciousLocalReputation
+
+when
+reputation.knownStatus == "suspicious"
+
+score
+35
+
+severity
+high
+
+recommendation
+SANDBOX
+
+evidence
+"Hash has a local suspicious reputation record."

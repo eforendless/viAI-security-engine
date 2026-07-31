@@ -7,7 +7,7 @@ viAI Local Security Engine is a privacy-first, static evidence collector for end
 - Watches configured download locations and executable file changes.
 - Performs local SHA-256, SHA-1, MD5, metadata, entropy, Authenticode, PE import/section, and packer-indicator analysis.
 - Maintains a local JSON reputation cache at `database/reputation.json`.
-- Evaluates editable JSON rules in `rules/` and produces a 0-100 investigation-priority score.
+- Compiles editable VRL rules in `rules/` at startup and produces a 0-100 investigation-priority score plus `ALLOW`, `MONITOR`, `SANDBOX`, or `AI_ANALYSIS` routing.
 - Exposes `POST /analyze` on loopback only at `127.0.0.1:4117`.
 
 ## Quick Start

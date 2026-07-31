@@ -1,0 +1,16 @@
+rule HighFileEntropy
+
+when
+file.entropy >= 7.2
+
+score
+15
+
+severity
+medium
+
+recommendation
+MONITOR
+
+evidence
+"High file entropy indicates packing or encryption."

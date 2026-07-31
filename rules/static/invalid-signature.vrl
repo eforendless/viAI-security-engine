@@ -1,0 +1,16 @@
+rule InvalidSignature
+
+when
+signature.status == "invalid"
+
+score
+30
+
+severity
+high
+
+recommendation
+AI_ANALYSIS
+
+evidence
+"Executable signature validation failed."

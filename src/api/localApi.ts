@@ -52,6 +52,7 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
         decision: analysis.decision,
         recommendation: analysis.recommendation,
         evidence: analysis.evidence,
+        staticAnalysisReport: analysis.staticAnalysisReport,
         analysis,
       }));
     } catch (error) {

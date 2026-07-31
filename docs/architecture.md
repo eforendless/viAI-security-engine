@@ -1,6 +1,6 @@
 # Architecture
 
-`watcher/` turns download, filesystem, and removable-media activity into typed `FileActivityEvent` messages. `core/eventManager` invokes `core/pipeline`, which performs static collection only. The pipeline composes analyzers, local reputation, JSON rules, and weighted scoring into `AnalysisResult`.
+`watcher/` turns download, filesystem, and removable-media activity into typed `FileActivityEvent` messages. `core/eventManager` invokes `core/pipeline`, which performs static collection only. The pipeline composes analyzers, local reputation, compiled VRL rules, and risk aggregation into `AnalysisResult`.
 
 ```mermaid
 flowchart TD
@@ -18,7 +18,7 @@ All reads are local file reads. The engine performs no HTTP egress, no file uplo
 
 ## Evidence and Scoring
 
-`scoring/riskEngine.ts` applies the following maximum contributions: reputation 30%, signature 20%, PE imports 20%, entropy 10%, packer indicators 10%, and rule findings 10%. Trusted-rule reductions may lower the final score. Rules are data files under `rules/`, enabling review and versioned policy changes without modifying analyzer code.
+The reusable Rule Engine compiles `.vrl` files from `rules/` and its policy categories at startup. Each compiled rule contributes evidence, a score, and optional investigation routing; `RiskAggregator` clamps the total to 0-100 and chooses the highest routing recommendation. See [rule-engine-architecture.md](rule-engine-architecture.md).
 
 ## Platform Notes
 

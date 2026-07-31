@@ -1,0 +1,23 @@
+rule UnsignedDownloadExecutable
+
+description
+Unsigned executable discovered in a downloads location.
+
+when
+file.isExecutable
+and
+!signature.isSigned
+and
+source.isDownload
+
+score
+20
+
+severity
+medium
+
+recommendation
+SANDBOX
+
+evidence
+"Unsigned executable from a downloads location."

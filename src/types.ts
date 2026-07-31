@@ -1,3 +1,5 @@
+import type { StaticAnalysisReport } from "../packages/core/src/rules/index.js";
+
 export type SignatureStatus = "trusted" | "unknown" | "invalid" | "missing";
 export type RiskLevel = "low" | "medium" | "high";
 export type InvestigationDecision = "no_further_investigation" | "investigate" | "investigate_urgent";
@@ -95,6 +97,7 @@ export interface AnalysisResult {
   recommendation: string;
   evidence: string[];
   heuristicFindings: HeuristicFinding[];
+  staticAnalysisReport: StaticAnalysisReport;
 }
 
 export interface SandboxSubmission {

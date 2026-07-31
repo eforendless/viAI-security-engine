@@ -5,10 +5,10 @@ import { extractMetadata } from "../analyzer/metadataExtractor.js";
 import { detectPacker } from "../analyzer/packerDetector.js";
 import { analyzePe } from "../analyzer/peAnalyzer.js";
 import { analyzeSignature } from "../analyzer/signatureAnalyzer.js";
-import { contextFromAnalysis, RulesEngine } from "../heuristics/rulesEngine.js";
+import { RuleEngine, RuleLoader, VrlRuleParser } from "../../packages/core/src/rules/index.js";
+import { createRuleContext } from "./ruleContextFactory.js";
 import { LocalReputationDatabase } from "../reputation/localDatabase.js";
-import { assessRisk } from "../scoring/riskEngine.js";
-import type { AnalysisResult } from "../types.js";
+import type { AnalysisResult, InvestigationDecision, RiskLevel } from "../types.js";
 
 export interface PipelineOptions {
   rulesDirectory: string;
@@ -16,11 +16,11 @@ export interface PipelineOptions {
 }
 
 export class AnalysisPipeline {
-  private rulesEnginePromise: Promise<RulesEngine>;
+  private ruleEnginePromise: Promise<RuleEngine>;
   private reputationDatabase: LocalReputationDatabase;
 
   constructor(options: PipelineOptions) {
-    this.rulesEnginePromise = RulesEngine.fromDirectory(options.rulesDirectory);
+    this.ruleEnginePromise = loadRuleEngine(options.rulesDirectory);
     this.reputationDatabase = new LocalReputationDatabase(options.reputationDatabasePath);
   }
 
@@ -33,8 +33,8 @@ export class AnalysisPipeline {
       analyzePe(resolvedPath),
       analyzeSignature(resolvedPath),
     ]);
-    const [rulesEngine, reputation] = await Promise.all([
-      this.rulesEnginePromise,
+    const [ruleEngine, reputation] = await Promise.all([
+      this.ruleEnginePromise,
       this.reputationDatabase.lookup(hashes.sha256),
     ]);
     const packer = detectPacker(peMetadata);
@@ -47,15 +47,10 @@ export class AnalysisPipeline {
       packer,
       peMetadata,
     };
-    const heuristicFindings = rulesEngine.evaluate(contextFromAnalysis(analysisContext, source));
-    const risk = assessRisk({
-      reputationScore: reputation.score,
-      signatureStatus: signature.status,
-      suspiciousImportCount: peMetadata.suspiciousImports.length,
-      entropy,
-      packerDetected: packer.detected,
-      heuristicFindings,
-    });
+    const staticAnalysisReport = ruleEngine.evaluate(createRuleContext({ ...analysisContext, hashes }, reputation, source), { filePath: resolvedPath, fileType: peMetadata.isPe ? "Windows Portable Executable" : metadataResult.fileType });
+    const heuristicFindings = staticAnalysisReport.matchedRules.map((result) => ({ ruleId: result.id, score: result.score, evidence: result.evidence }));
+    const riskLevel = toRiskLevel(staticAnalysisReport.riskScore);
+    const decision = toDecision(staticAnalysisReport.recommendation);
     await this.reputationDatabase.recordSeen(hashes.sha256, basename(resolvedPath));
 
     return {
@@ -71,21 +66,27 @@ export class AnalysisPipeline {
       peMetadata,
       heuristicScore: heuristicFindings.reduce((total, finding) => total + finding.score, 0),
       reputationScore: reputation.score,
-      finalRiskScore: risk.score,
-      riskLevel: risk.riskLevel,
-      decision: risk.decision,
-      recommendation: risk.recommendation,
+      finalRiskScore: staticAnalysisReport.riskScore,
+      riskLevel,
+      decision,
+      recommendation: staticAnalysisReport.recommendation,
       evidence: unique([
-        ...(signature.evidence ? [signature.evidence] : []),
-        ...reputation.evidence,
-        ...heuristicFindings.map((finding) => finding.evidence),
-        ...packer.reasons,
-        ...peMetadata.suspiciousImports.map((api) => `suspicious imported API: ${api}`),
+        ...staticAnalysisReport.indicators,
       ]),
       heuristicFindings,
+      staticAnalysisReport,
     };
   }
 }
+
+async function loadRuleEngine(directory: string): Promise<RuleEngine> {
+  const engine = new RuleEngine(new RuleLoader([new VrlRuleParser()]));
+  await engine.load(directory);
+  return engine;
+}
+
+function toRiskLevel(score: number): RiskLevel { return score <= 25 ? "low" : score <= 60 ? "medium" : "high"; }
+function toDecision(recommendation: string): InvestigationDecision { return recommendation === "ALLOW" ? "no_further_investigation" : recommendation === "AI_ANALYSIS" ? "investigate_urgent" : "investigate"; }
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];

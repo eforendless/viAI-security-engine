@@ -1,0 +1,16 @@
+rule DetectedPacker
+
+when
+pe.packerDetected
+
+score
+15
+
+severity
+medium
+
+recommendation
+SANDBOX
+
+evidence
+"Packer indicators were detected."

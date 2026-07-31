@@ -1,0 +1,18 @@
+rule TrustedMicrosoftPublisher
+
+when
+signature.status == "trusted"
+and
+signature.publisher contains "Microsoft"
+
+score
+-10
+
+severity
+low
+
+recommendation
+ALLOW
+
+evidence
+"Valid Microsoft signature is present."

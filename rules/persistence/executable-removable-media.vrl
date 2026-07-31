@@ -1,0 +1,18 @@
+rule ExecutableRemovableMedia
+
+when
+source.kind == "removable-media"
+and
+file.isExecutable
+
+score
+10
+
+severity
+low
+
+recommendation
+MONITOR
+
+evidence
+"Executable discovered on removable media."

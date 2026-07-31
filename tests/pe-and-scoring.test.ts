@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parsePe } from "../src/analyzer/peAnalyzer.js";
-import { assessRisk } from "../src/scoring/riskEngine.js";
+import { RiskAggregator } from "../packages/core/src/rules/index.js";
 
 test("PE parser extracts imports and flags security-relevant APIs", () => {
   const fixture = createPeFixture();
@@ -11,18 +11,11 @@ test("PE parser extracts imports and flags security-relevant APIs", () => {
   assert.deepEqual(analysis.suspiciousImports, ["KERNEL32.dll!VirtualAlloc"]);
 });
 
-test("risk score represents investigation priority rather than a malware verdict", () => {
-  const assessment = assessRisk({
-    reputationScore: 100,
-    signatureStatus: "invalid",
-    suspiciousImportCount: 2,
-    entropy: 7.8,
-    packerDetected: true,
-    heuristicFindings: [{ ruleId: "fixture", score: 30, evidence: "fixture evidence" }],
-  });
-  assert.equal(assessment.riskLevel, "high");
-  assert.equal(assessment.decision, "investigate_urgent");
-  assert.ok(assessment.score >= 61);
+test("risk aggregation produces investigation routing rather than a malware verdict", () => {
+  const report = new RiskAggregator().aggregate("fixture", [{ id: "fixture", matched: true, score: 70, severity: "high", evidence: "fixture evidence", recommendation: "SANDBOX" }], {});
+  assert.equal(report.riskScore, 70);
+  assert.equal(report.recommendation, "SANDBOX");
+  assert.deepEqual(report.indicators, ["fixture evidence"]);
 });
 
 function createPeFixture(): Buffer {

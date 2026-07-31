@@ -1,0 +1,16 @@
+rule SuspiciousApiImports
+
+when
+pe.suspiciousImportCount >= 2
+
+score
+30
+
+severity
+high
+
+recommendation
+SANDBOX
+
+evidence
+"Multiple security-relevant API imports were found."

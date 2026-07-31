@@ -28,8 +28,9 @@ export function useScan() {
           const result = await analyzeFile(filePath);
           useSecurityStore.getState().addHistory(result.analysis);
           if (result.riskScore > 25) investigationCount += 1;
-        } catch {
-          toast.error(`Could not analyze ${filePath.split(/[\\/]/).pop()}`, { id: `failure-${index}` });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Unknown engine error";
+          toast.error(`Could not analyze ${filePath.split(/[\\/]/).pop()}: ${reason}`, { id: `failure-${index}` });
         }
         completed += 1;
         useSecurityStore.getState().setProgress(completed, filePath, investigationCount);

@@ -7,6 +7,32 @@ import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
 
 const execFileAsync = promisify(execFile);
+let engineProcess: ReturnType<typeof execFile> | undefined;
+
+function enginePaths(): { entry: string; workingDirectory: string } {
+  if (app.isPackaged) {
+    const workingDirectory = join(process.resourcesPath, "engine");
+    return { entry: join(workingDirectory, "dist", "src", "index.js"), workingDirectory };
+  }
+  const workingDirectory = join(__dirname, "..", "..");
+  return { entry: join(workingDirectory, "dist", "src", "index.js"), workingDirectory };
+}
+
+function startEngine(): void {
+  if (process.env.VITE_DEV_SERVER_URL) return;
+  const { entry, workingDirectory } = enginePaths();
+  if (!existsSync(entry)) {
+    console.error(`viAI engine entry point was not found: ${entry}`);
+    return;
+  }
+  engineProcess = execFile(process.execPath, [entry], {
+    cwd: workingDirectory,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    windowsHide: true,
+  });
+  engineProcess.on("error", (error) => console.error("Unable to start viAI engine", error));
+  engineProcess.stderr?.on("data", (output) => console.error(`viAI engine error: ${String(output).trim()}`));
+}
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -30,6 +56,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  startEngine();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -39,6 +66,8 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+app.on("before-quit", () => engineProcess?.kill());
 
 ipcMain.handle("dialog:pick-file", async () => {
   const result = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "All files", extensions: ["*"] }] });

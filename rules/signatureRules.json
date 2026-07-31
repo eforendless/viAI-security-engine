@@ -1,0 +1,20 @@
+[
+  {
+    "id": "unsigned-download-executable",
+    "when": { "all": [{ "field": "signatureStatus", "equals": "missing" }, { "field": "isDownload", "equals": true }, { "field": "isExecutableCandidate", "equals": true }] },
+    "score": 20,
+    "evidence": "unsigned executable from a downloads location"
+  },
+  {
+    "id": "invalid-signature",
+    "when": { "field": "signatureStatus", "equals": "invalid" },
+    "score": 30,
+    "evidence": "invalid executable signature"
+  },
+  {
+    "id": "trusted-microsoft-binary",
+    "when": { "all": [{ "field": "signatureStatus", "equals": "trusted" }, { "field": "signaturePublisher", "contains": "Microsoft" }] },
+    "score": -50,
+    "evidence": "valid Microsoft signature"
+  }
+]

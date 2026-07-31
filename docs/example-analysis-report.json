@@ -1,0 +1,14 @@
+{
+  "riskScore": 72,
+  "riskLevel": "high",
+  "decision": "investigate_urgent",
+  "recommendation": "available local evidence strongly justifies priority investigation",
+  "evidence": [
+    "unsigned executable from a downloads location",
+    "high file entropy suggests packing or encryption",
+    "multiple APIs associated with code injection or execution are imported",
+    "suspicious imported API: KERNEL32.dll!VirtualAlloc",
+    "suspicious imported API: KERNEL32.dll!WriteProcessMemory"
+  ],
+  "privacy": "All evidence was collected locally; no file content was uploaded or executed."
+}

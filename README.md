@@ -36,3 +36,21 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4117/analyze -ContentType a
 The score measures investigation justification, not a malware probability. `high` results can be handed to a sandbox through the `SandboxClient` contract; the AI investigation contract is intentionally separate.
 
 See [docs/architecture.md](docs/architecture.md), [docs/example-analysis-report.json](docs/example-analysis-report.json), and [docs/development-roadmap.md](docs/development-roadmap.md).
+
+## Desktop Application
+
+The Electron desktop experience is in [desktop](desktop). It uses the existing local `/analyze` API through a secure Electron IPC bridge; it does not reimplement engine analysis.
+
+```powershell
+npm start
+```
+
+In a second terminal:
+
+```powershell
+Set-Location desktop
+npm install
+npm run desktop
+```
+
+The Vite renderer is available at `http://localhost:5173` during development and opens inside Electron automatically. Production validation uses `npm run build` from the `desktop` directory.

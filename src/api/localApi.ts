@@ -3,6 +3,10 @@ import type { AnalysisPipeline } from "../core/pipeline.js";
 
 export function createLocalApi(pipeline: AnalysisPipeline): Server {
   return createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ready", scope: "local-only" }));
+      return;
+    }
     if (request.method !== "POST" || request.url !== "/analyze") {
       response.writeHead(404).end();
       return;

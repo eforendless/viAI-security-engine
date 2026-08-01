@@ -55,6 +55,7 @@ export function parsePe(buffer: Buffer): PeMetadata {
     const directoryOffset = optionalHeaderOffset + (is64Bit ? 112 : 96);
     const exportRva = readUInt32IfPresent(buffer, directoryOffset);
     const importRva = readUInt32IfPresent(buffer, directoryOffset + 8);
+    const clrRva = readUInt32IfPresent(buffer, directoryOffset + 14 * 8);
     const imports = importRva ? parseImports(buffer, importRva, sections, is64Bit) : [];
     const suspiciousImports = imports.filter((entry) => SUSPICIOUS_APIS.has(entry.split("!").at(-1)?.toLowerCase() ?? ""));
 
@@ -62,6 +63,14 @@ export function parsePe(buffer: Buffer): PeMetadata {
       isPe: true,
       machine: machineCode === 0x8664 ? "x64" : machineCode === 0x14c ? "x86" : `0x${machineCode.toString(16)}`,
       compilationTimestamp: new Date(timestamp * 1000).toISOString(),
+      entryPointRva: readUInt32IfPresent(buffer, optionalHeaderOffset + 16),
+      imageBase: imageBase(buffer, optionalHeaderOffset, is64Bit),
+      subsystem: subsystemName(readUInt16IfPresent(buffer, optionalHeaderOffset + 68)),
+      dllCharacteristics: dllCharacteristics(readUInt16IfPresent(buffer, optionalHeaderOffset + 70)),
+      checksum: readUInt32IfPresent(buffer, optionalHeaderOffset + 64),
+      sizeOfImage: readUInt32IfPresent(buffer, optionalHeaderOffset + 56),
+      overlaySize: overlaySize(buffer, sections),
+      clrPresent: clrRva !== 0,
       numberOfSections: sectionCount,
       sections,
       imports,
@@ -145,4 +154,33 @@ function hasBytes(buffer: Buffer, offset: number, length: number): boolean {
 
 function readUInt32IfPresent(buffer: Buffer, offset: number): number {
   return hasBytes(buffer, offset, 4) ? buffer.readUInt32LE(offset) : 0;
+}
+
+function readUInt16IfPresent(buffer: Buffer, offset: number): number {
+  return hasBytes(buffer, offset, 2) ? buffer.readUInt16LE(offset) : 0;
+}
+
+function imageBase(buffer: Buffer, offset: number, is64Bit: boolean): string {
+  const value = is64Bit && hasBytes(buffer, offset + 24, 8) ? buffer.readBigUInt64LE(offset + 24) : BigInt(readUInt32IfPresent(buffer, offset + 28));
+  return `0x${value.toString(16)}`;
+}
+
+function subsystemName(value: number): string {
+  return value === 2 ? "Windows GUI" : value === 3 ? "Windows CUI" : value === 1 ? "Native" : value === 0 ? "Unknown" : `0x${value.toString(16)}`;
+}
+
+function dllCharacteristics(value: number): string[] {
+  const flags: ReadonlyArray<readonly [number, string]> = [
+    [0x0040, "DYNAMIC_BASE"],
+    [0x0100, "NX_COMPAT"],
+    [0x0400, "NO_SEH"],
+    [0x4000, "GUARD_CF"],
+    [0x8000, "TERMINAL_SERVER_AWARE"],
+  ];
+  return flags.flatMap(([flag, name]) => value & flag ? [name] : []);
+}
+
+function overlaySize(buffer: Buffer, sections: PeSection[]): number {
+  const sectionEnd = sections.reduce((largest, section) => Math.max(largest, section.rawOffset + section.rawSize), 0);
+  return Math.max(0, buffer.length - sectionEnd);
 }

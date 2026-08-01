@@ -1,14 +1,12 @@
 import { basename, resolve } from "node:path";
-import { analyzeEntropy } from "../analyzer/entropyAnalyzer.js";
-import { analyzeHashes } from "../analyzer/hashAnalyzer.js";
-import { extractMetadata } from "../analyzer/metadataExtractor.js";
-import { detectPacker } from "../analyzer/packerDetector.js";
-import { analyzePe } from "../analyzer/peAnalyzer.js";
-import { analyzeSignature } from "../analyzer/signatureAnalyzer.js";
 import { CertificateValidator, FileLocationEvaluator, HashReputationEvaluator, InstallationContextEvaluator, PublisherValidator, RuleEngine, RuleLoader, TrustAssessmentEngine, TrustRegistry, VersionValidator, VrlRuleParser, type TrustedPublisher } from "../../packages/core/src/rules/index.js";
-import { createRuleContext } from "./ruleContextFactory.js";
-import { createTrustContext } from "./trustContextFactory.js";
+import { createDefaultEvidenceExtractionPipeline } from "../evidence/defaultEvidenceCollectors.js";
+import { type EvidenceExtractionPipeline, type EvidencePipelineEvent } from "../evidence/evidenceExtractionPipeline.js";
+import { createRuleContextFromEvidence } from "./ruleContextFactory.js";
+import { createTrustContextFromEvidence } from "./trustContextFactory.js";
+import { StaticEvidenceTrustEvaluator } from "./staticEvidenceTrustEvaluator.js";
 import { LocalReputationDatabase } from "../reputation/localDatabase.js";
+import { ReportBuilder } from "../report/reportBuilder.js";
 import type { AnalysisResult, InvestigationDecision, RiskLevel } from "../types.js";
 
 export interface PipelineOptions {
@@ -16,57 +14,69 @@ export interface PipelineOptions {
   reputationDatabasePath: string;
   trustedPublishers?: readonly TrustedPublisher[];
   trustAssessmentEngine?: TrustAssessmentEngine;
+  evidencePipeline?: EvidenceExtractionPipeline;
 }
 
 export class AnalysisPipeline {
   private ruleEnginePromise: Promise<RuleEngine>;
   private reputationDatabase: LocalReputationDatabase;
   private trustAssessmentEngine: TrustAssessmentEngine;
+  private reportBuilder = new ReportBuilder();
+  private evidencePipeline: EvidenceExtractionPipeline;
 
   constructor(options: PipelineOptions) {
     this.ruleEnginePromise = loadRuleEngine(options.rulesDirectory);
     this.reputationDatabase = new LocalReputationDatabase(options.reputationDatabasePath);
     this.trustAssessmentEngine = options.trustAssessmentEngine ?? createTrustAssessmentEngine(options.trustedPublishers ?? []);
+    this.evidencePipeline = options.evidencePipeline ?? createDefaultEvidenceExtractionPipeline();
+  }
+
+  onEvidenceEvent(listener: (event: EvidencePipelineEvent) => void): () => void {
+    return this.evidencePipeline.onEvent(listener);
   }
 
   async analyze(filePath: string, source?: "download" | "filesystem" | "removable-media"): Promise<AnalysisResult> {
     const resolvedPath = resolve(filePath);
-    const [hashes, metadataResult, entropy, peMetadata, signature] = await Promise.all([
-      analyzeHashes(resolvedPath),
-      extractMetadata(resolvedPath),
-      analyzeEntropy(resolvedPath),
-      analyzePe(resolvedPath),
-      analyzeSignature(resolvedPath),
-    ]);
+    const evidenceStore = await this.evidencePipeline.extract(resolvedPath, source);
+    const hashes = requireEvidence(evidenceStore.hashes, "hashes");
+    const metadata = requireEvidence(evidenceStore.metadata, "metadata");
+    const fileSystemEvidence = requireEvidence(evidenceStore.fileSystem, "filesystem evidence");
+    const entropy = requireEvidence(evidenceStore.entropy, "entropy");
+    const peMetadata = requireEvidence(evidenceStore.portableExecutable, "Portable Executable metadata");
+    const signature = requireEvidence(evidenceStore.signature, "signature");
+    const packer = requireEvidence(evidenceStore.packer, "packer evidence");
     const [ruleEngine, reputation] = await Promise.all([
       this.ruleEnginePromise,
       this.reputationDatabase.lookup(hashes.sha256),
     ]);
-    const packer = detectPacker(peMetadata);
     const analysisContext = {
       filePath: resolvedPath,
       signatureStatus: signature.status,
       signaturePublisher: signature.publisher,
-      metadata: metadataResult.metadata,
+      metadata,
       entropy,
       packer,
       peMetadata,
     };
-    const trust = await this.trustAssessmentEngine.assess(createTrustContext({ filePath: resolvedPath, hashes, signatureStatus: signature.status, signaturePublisher: signature.publisher }, reputation));
-    const staticAnalysisReport = ruleEngine.evaluate(createRuleContext({ ...analysisContext, hashes }, reputation, source), { filePath: resolvedPath, fileType: peMetadata.isPe ? "Windows Portable Executable" : metadataResult.fileType }, trust);
+    const trust = await this.trustAssessmentEngine.assess(createTrustContextFromEvidence(evidenceStore, reputation));
+    const fileType = peMetadata.isPe ? "Windows Portable Executable" : evidenceStore.file.fileType ?? "unknown";
+    const staticAnalysisReport = ruleEngine.evaluate(createRuleContextFromEvidence(evidenceStore, reputation), { filePath: resolvedPath, fileType }, trust);
     const heuristicFindings = staticAnalysisReport.matchedRules.map((result) => ({ ruleId: result.id, score: result.score, evidence: result.evidence }));
     const riskLevel = toRiskLevel(staticAnalysisReport.riskScore);
     const decision = toDecision(staticAnalysisReport.recommendation);
+    const report = this.reportBuilder.buildFromEvidence(evidenceStore, riskLevel, staticAnalysisReport);
     await this.reputationDatabase.recordSeen(hashes.sha256, basename(resolvedPath));
 
     return {
       filePath: resolvedPath,
       analyzedAt: new Date().toISOString(),
       hashes,
-      fileType: peMetadata.isPe ? "Windows Portable Executable" : metadataResult.fileType,
-      metadata: metadataResult.metadata,
+      fileType,
+      metadata,
+      fileSystemEvidence,
       signatureStatus: signature.status,
       signaturePublisher: signature.publisher,
+      digitalSignature: signature.details,
       entropy,
       packer,
       peMetadata,
@@ -84,6 +94,8 @@ export class AnalysisPipeline {
       ]),
       heuristicFindings,
       staticAnalysisReport,
+      report,
+      evidenceStore,
     };
   }
 }
@@ -109,5 +121,11 @@ function createTrustAssessmentEngine(trustedPublishers: readonly TrustedPublishe
     new VersionValidator(),
     new InstallationContextEvaluator(),
     new HashReputationEvaluator(),
+    new StaticEvidenceTrustEvaluator(),
   ]));
+}
+
+function requireEvidence<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`Evidence extraction did not produce ${label}`);
+  return value;
 }

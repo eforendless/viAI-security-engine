@@ -25,3 +25,11 @@ export async function analyzeHashes(filePath: string): Promise<Hashes> {
     md5: md5.digest("hex"),
   };
 }
+
+export function analyzeHashesFromBytes(bytes: Uint8Array): Hashes {
+  return {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sha1: createHash("sha1").update(bytes).digest("hex"),
+    md5: createHash("md5").update(bytes).digest("hex"),
+  };
+}

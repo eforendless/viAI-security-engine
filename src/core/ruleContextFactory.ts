@@ -1,5 +1,5 @@
 import type { RuleContext, SourceKind } from "../../packages/core/src/rules/index.js";
-import type { AnalysisResult, PackerFinding, PeMetadata, ReputationResult, SignatureStatus } from "../types.js";
+import type { AnalysisResult, EvidenceStore, PackerFinding, PeMetadata, ReputationResult, SignatureStatus } from "../types.js";
 
 interface ContextInput {
   filePath: string;
@@ -41,4 +41,19 @@ export function createRuleContext(input: ContextInput, reputation: ReputationRes
     source: { kind: sourceKind, isDownload: sourceKind === "download" || /[\\/]downloads([\\/]|$)/i.test(input.filePath) },
     reputation: { score: reputation.score, knownStatus: reputation.record?.knownStatus ?? "unknown" },
   };
+}
+
+export function createRuleContextFromEvidence(evidence: EvidenceStore, reputation: ReputationResult): RuleContext {
+  const hashes = requireEvidence(evidence.hashes, "hashes");
+  const metadata = requireEvidence(evidence.metadata, "metadata");
+  const signature = requireEvidence(evidence.signature, "signature");
+  const entropy = requireEvidence(evidence.entropy, "entropy");
+  const packer = requireEvidence(evidence.packer, "packer evidence");
+  const peMetadata = requireEvidence(evidence.portableExecutable, "Portable Executable metadata");
+  return createRuleContext({ filePath: evidence.file.path, hashes, metadata, entropy, signatureStatus: signature.status, signaturePublisher: signature.publisher, packer, peMetadata }, reputation, evidence.file.source);
+}
+
+function requireEvidence<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`Evidence extraction did not produce ${label}`);
+  return value;
 }

@@ -28,6 +28,67 @@ export interface FileMetadata {
   isExecutableCandidate: boolean;
 }
 
+export interface ZoneIdentifier {
+  zoneId: number;
+  zoneName: "local-machine" | "local-intranet" | "trusted-sites" | "internet" | "restricted-sites";
+  hostUrl?: string;
+  referrerUrl?: string;
+}
+
+export interface FileSystemEvidence {
+  isSymbolicLink: boolean;
+  isHiddenByName: boolean;
+  zoneIdentifier?: ZoneIdentifier;
+}
+
+export interface EvidenceCollectorExecution {
+  id: string;
+  status: "completed" | "failed";
+  durationMs: number;
+  warning?: string;
+}
+
+export interface EvidenceProcessingMetadata {
+  startedAt: string;
+  completedAt?: string;
+  cacheHit: boolean;
+  fileReadCount: number;
+  peParseCount: number;
+  collectors: readonly EvidenceCollectorExecution[];
+}
+
+export interface EvidenceStore {
+  schemaVersion: "0.2";
+  file: { path: string; name: string; source?: "download" | "filesystem" | "removable-media"; fileType?: string };
+  hashes?: Hashes;
+  metadata?: FileMetadata;
+  signature?: { status: SignatureStatus; publisher?: string; details: DigitalSignatureDetails };
+  entropy?: number;
+  portableExecutable?: PeMetadata;
+  packer?: PackerFinding;
+  fileSystem?: FileSystemEvidence;
+  sections?: readonly PeSection[];
+  imports?: readonly string[];
+  exportsPresent?: boolean;
+  warnings: readonly string[];
+  processingMetadata: EvidenceProcessingMetadata;
+}
+
+export interface DigitalSignatureDetails {
+  present: boolean;
+  valid: boolean;
+  trusted: boolean;
+  status: string;
+  statusMessage?: string;
+  publisher?: string;
+  certificateSubject?: string;
+  certificateIssuer?: string;
+  certificateExpiresAt?: string;
+  timestamped: boolean;
+  revoked: boolean;
+  selfSigned: boolean;
+}
+
 export interface PeSection {
   name: string;
   virtualAddress: number;
@@ -44,6 +105,14 @@ export interface PeMetadata {
   isPe: boolean;
   machine?: string;
   compilationTimestamp?: string;
+  entryPointRva?: number;
+  imageBase?: string;
+  subsystem?: string;
+  dllCharacteristics?: string[];
+  checksum?: number;
+  sizeOfImage?: number;
+  overlaySize?: number;
+  clrPresent?: boolean;
   numberOfSections?: number;
   sections: PeSection[];
   imports: string[];
@@ -78,14 +147,38 @@ export interface HeuristicFinding {
   evidence: string;
 }
 
+export type TrustLevel = "low" | "limited" | "established" | "high";
+
+export interface ScoreBreakdownItem {
+  id: string;
+  category: string;
+  score: number;
+  reason: string;
+  recommendation?: string;
+}
+
+export interface ProfessionalReport {
+  schemaVersion: "0.2";
+  summary: string;
+  trust: { score: number; level: TrustLevel; indicators: Array<{ id: string; category: string; weight: number; impact: "positive" | "negative"; reason: string }> };
+  risk: { score: number; level: RiskLevel; breakdown: ScoreBreakdownItem[] };
+  confidence: { score: number; explanation: string[] };
+  recommendation: string;
+  indicators: string[];
+  warnings: string[];
+  fileSystem: FileSystemEvidence;
+}
+
 export interface AnalysisResult {
   filePath: string;
   analyzedAt: string;
   hashes: Hashes;
   fileType: string;
   metadata: FileMetadata;
+  fileSystemEvidence: FileSystemEvidence;
   signatureStatus: SignatureStatus;
   signaturePublisher?: string;
+  digitalSignature: DigitalSignatureDetails;
   entropy: number;
   packer: PackerFinding;
   peMetadata: PeMetadata;
@@ -101,6 +194,8 @@ export interface AnalysisResult {
   evidence: string[];
   heuristicFindings: HeuristicFinding[];
   staticAnalysisReport: StaticAnalysisReport;
+  report: ProfessionalReport;
+  evidenceStore?: EvidenceStore;
 }
 
 export interface SandboxSubmission {

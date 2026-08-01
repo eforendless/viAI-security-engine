@@ -12,6 +12,7 @@ import {
   type HashReputationProvider,
 } from "../packages/core/src/trust/index.js";
 import { loadTrustedPublishers } from "../src/core/trustedPublisherConfig.js";
+import { StaticEvidenceTrustEvaluator } from "../src/core/staticEvidenceTrustEvaluator.js";
 
 const trustedHashProvider: HashReputationProvider = {
   lookup: async () => ({ status: "trusted", evidence: "Hash is trusted by an offline test provider." }),
@@ -59,4 +60,18 @@ test("trusted publisher identities are loaded from deployable configuration", as
   const publishers = await loadTrustedPublishers("database/trusted-publishers.json");
   assert.ok(publishers.some((publisher) => publisher.id === "MICROSOFT"));
   assert.ok(publishers.every((publisher) => publisher.subjectNames.length > 0));
+});
+
+test("static evidence emits independent weighted trust indicators", async () => {
+  const evaluator = new StaticEvidenceTrustEvaluator();
+  const indicators = await evaluator.evaluate({ filePath: "C:\\Samples\\tool.exe", hash: "known", signature: { isSigned: false, certificateStatus: "missing" }, staticEvidence: { previouslySeenHash: true, isPe: true, parseWarnings: [], entropy: 5.2, packerDetected: false } });
+  assert.deepEqual(indicators.map((indicator) => indicator.id), ["PREVIOUSLY_SEEN_HASH", "STRUCTURALLY_NORMAL_PE", "UNSIGNED_BINARY"]);
+  assert.equal(indicators.reduce((total, indicator) => total + indicator.weight, 0), 1);
+});
+
+test("Internet Zone Identifier is a bounded static trust signal", async () => {
+  const evaluator = new StaticEvidenceTrustEvaluator();
+  const indicators = await evaluator.evaluate({ filePath: "C:\\Samples\\download.exe", hash: "unknown", signature: { isSigned: true, certificateStatus: "trusted" }, staticEvidence: { previouslySeenHash: false, isPe: false, parseWarnings: [], entropy: 1, packerDetected: false, zoneIdentifier: { zoneName: "internet" } } });
+  assert.deepEqual(indicators.map((indicator) => indicator.id), ["INTERNET_ZONE_ORIGIN"]);
+  assert.equal(indicators[0]?.weight, -3);
 });

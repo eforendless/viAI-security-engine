@@ -9,6 +9,14 @@ test("PE parser extracts imports and flags security-relevant APIs", () => {
   assert.equal(analysis.isPe, true);
   assert.equal(analysis.sections[0]?.name, ".text");
   assert.deepEqual(analysis.suspiciousImports, ["KERNEL32.dll!VirtualAlloc"]);
+  assert.equal(analysis.entryPointRva, 0x1000);
+  assert.equal(analysis.imageBase, "0x400000");
+  assert.equal(analysis.subsystem, "Windows GUI");
+  assert.deepEqual(analysis.dllCharacteristics, ["DYNAMIC_BASE", "NX_COMPAT"]);
+  assert.equal(analysis.checksum, 0x12345678);
+  assert.equal(analysis.sizeOfImage, 0x2000);
+  assert.equal(analysis.overlaySize, 0);
+  assert.equal(analysis.clrPresent, true);
 });
 
 test("risk aggregation produces investigation routing rather than a malware verdict", () => {
@@ -28,7 +36,15 @@ function createPeFixture(): Buffer {
   file.writeUInt32LE(1_700_000_000, 0x88);
   file.writeUInt16LE(0xe0, 0x94);
   file.writeUInt16LE(0x10b, 0x98);
+  file.writeUInt32LE(0x1000, 0x98 + 16);
+  file.writeUInt32LE(0x400000, 0x98 + 28);
+  file.writeUInt32LE(0x2000, 0x98 + 56);
+  file.writeUInt32LE(0x12345678, 0x98 + 64);
+  file.writeUInt16LE(2, 0x98 + 68);
+  file.writeUInt16LE(0x140, 0x98 + 70);
+  file.writeUInt32LE(16, 0x98 + 92);
   file.writeUInt32LE(0x1000, 0x98 + 96 + 8);
+  file.writeUInt32LE(0x1100, 0x98 + 96 + 14 * 8);
   const section = 0x178;
   file.write(".text", section);
   file.writeUInt32LE(0x200, section + 8);

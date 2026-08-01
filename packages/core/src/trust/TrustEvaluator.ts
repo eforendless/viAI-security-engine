@@ -30,6 +30,14 @@ export interface TrustEvaluationContext {
   readonly version?: VersionInformation;
   readonly installationContexts?: readonly InstallationContext[];
   readonly hashReputation?: HashReputation;
+  readonly staticEvidence?: {
+    readonly previouslySeenHash: boolean;
+    readonly isPe: boolean;
+    readonly parseWarnings: readonly string[];
+    readonly entropy: number;
+    readonly packerDetected: boolean;
+    readonly zoneIdentifier?: { readonly zoneName: "local-machine" | "local-intranet" | "trusted-sites" | "internet" | "restricted-sites" };
+  };
 }
 
 export interface TrustEvaluator {

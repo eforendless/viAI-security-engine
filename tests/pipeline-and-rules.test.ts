@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AnalysisPipeline } from "../src/core/pipeline.js";
+import { HtmlReportGenerator } from "../src/report/htmlReportGenerator.js";
 import { TrustAssessmentEngine, TrustRegistry, type TrustEvaluator } from "../packages/core/src/trust/index.js";
 import { LocalReputationDatabase } from "../src/reputation/localDatabase.js";
 import { RuleEngine, RuleLoader, VrlRuleParser } from "../packages/core/src/rules/index.js";
@@ -38,12 +39,27 @@ test("pipeline records local evidence and never executes its input", async () =>
     });
     const result = await pipeline.analyze(inputPath, "download");
     assert.equal(result.metadata.isExecutableCandidate, true);
+    assert.equal(result.fileSystemEvidence.isSymbolicLink, false);
     assert.equal(result.peMetadata.isPe, false);
     assert.equal(result.hashes.sha256.length, 64);
     assert.ok(result.evidence.length > 0);
     assert.equal(result.staticAnalysisReport.fileHash, result.hashes.sha256);
     assert.equal(result.trustScore, 30);
+    assert.equal(result.digitalSignature.status, "Unavailable");
     assert.equal(result.staticAnalysisReport.trustIndicators[0]?.id, "PIPELINE_TRUST");
+    assert.equal(result.report.schemaVersion, "0.2");
+    assert.equal(result.report.trust.score, 30);
+    assert.equal(result.report.fileSystem.isHiddenByName, false);
+    assert.equal(result.evidenceStore?.processingMetadata.fileReadCount, 1);
+    assert.equal(result.evidenceStore?.processingMetadata.peParseCount, 1);
+    assert.deepEqual(result.evidenceStore?.processingMetadata.collectors.map((collector) => collector.status), ["completed", "completed", "completed", "completed", "completed", "completed", "completed"]);
+    assert.match(result.report.summary, /static analysis does not determine intent/i);
+    const html = new HtmlReportGenerator().generate(result);
+    assert.match(html, /viAI SECURITY/);
+    assert.match(html, /<details open>/);
+    assert.match(html, /Static analysis report/);
+    assert.match(html, /Filesystem evidence/);
+    assert.match(html, /Entry point/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

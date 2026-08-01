@@ -11,7 +11,8 @@ export class LocalReputationDatabase {
     return this.enqueue(async () => {
       const records = await this.readRecords();
       const record = records.find((entry) => entry.hash.toLowerCase() === hash.toLowerCase());
-      if (!record || record.knownStatus === "unknown") return { score: 0, evidence: [] };
+      if (!record) return { score: 0, evidence: [] };
+      if (record.knownStatus === "unknown") return { record, score: 0, evidence: ["hash was previously observed locally"] };
       if (record.knownStatus === "trusted") return { record, score: 0, evidence: ["hash is locally recorded as trusted"] };
       return { record, score: record.riskLevel === "high" ? 100 : 65, evidence: ["hash has a local suspicious reputation record"] };
     });

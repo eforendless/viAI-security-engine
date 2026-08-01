@@ -1,4 +1,5 @@
 import { open, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { extname } from "node:path";
 import type { FileMetadata } from "../types.js";
 
@@ -46,4 +47,21 @@ function detectFileType(header: Buffer, extension: string): string {
     return "Mach-O binary";
   }
   return extension ? `${extension.slice(1).toUpperCase()} file` : "unknown";
+}
+
+export function extractMetadataFromSnapshot(filePath: string, fileStat: Stats, bytes: Uint8Array): { metadata: FileMetadata; fileType: string } {
+  if (!fileStat.isFile()) {
+    throw new Error("Analysis requires a regular file");
+  }
+  const extension = extname(filePath).toLowerCase();
+  return {
+    metadata: {
+      size: fileStat.size,
+      createdAt: fileStat.birthtime.toISOString(),
+      modifiedAt: fileStat.mtime.toISOString(),
+      extension,
+      isExecutableCandidate: isExecutableCandidate(filePath),
+    },
+    fileType: detectFileType(Buffer.from(bytes.subarray(0, 8)), extension),
+  };
 }

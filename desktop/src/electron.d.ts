@@ -29,6 +29,13 @@ declare global {
       chooseFile(): Promise<string | undefined>;
       chooseFolder(): Promise<string | undefined>;
       openPath(filePath: string): Promise<string>;
+      scans: {
+        start(mode: "quick" | "full" | "folder", target?: string): Promise<unknown>;
+        pause(): Promise<void>;
+        resume(): Promise<void>;
+        cancel(): Promise<void>;
+        onEvent(listener: (update: unknown) => void): () => void;
+      };
       listFiles(roots: string[], maxFiles?: number): Promise<string[]>;
       systemRoots(): Promise<string[]>;
       analyzeFile(filePath: string): Promise<unknown>;

@@ -7,15 +7,31 @@ import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
 import { DeviceSecurityService, type DeviceSecuritySnapshot } from "./deviceSecurity";
 import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate } from "./backgroundService";
+import { ScanService, type ScanEventName } from "./scanService";
+import { StartupManager, type StartupProgress } from "./startup";
 
 const execFileAsync = promisify(execFile);
+const isPrimaryInstance = app.requestSingleInstanceLock();
 let engineProcess: ReturnType<typeof execFile> | undefined;
 let deviceSecurity: DeviceSecurityService | undefined;
 let backgroundService: BackgroundService | undefined;
+let scanService: ScanService | undefined;
 let mainWindow: BrowserWindow | undefined;
+let splashWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
 let engineEventTimer: NodeJS.Timeout | undefined;
+let disposing = false;
+let dashboardLoad: Promise<void> | undefined;
+let startupManager: StartupManager | undefined;
+let startupComplete = false;
+let startupRunning = false;
+let restoreAfterStartup = false;
+let startupSnapshot: BackgroundSnapshot | undefined;
+const launchedInBackground = process.argv.includes("--viai-background");
+
+if (!isPrimaryInstance) app.quit();
+if (isPrimaryInstance) {
 
 function publishDeviceSecurity(snapshot: DeviceSecuritySnapshot, events: readonly DeviceSecuritySnapshot["history"][number][]): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("device-security:changed", { snapshot, events });
@@ -27,6 +43,10 @@ function publishBackground(snapshot: BackgroundSnapshot): void {
   applyStartup(snapshot.settings);
 }
 
+function publishScan(event: ScanEventName, scan: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) window.webContents.send("scan:event", { event, scan });
+}
+
 function enginePaths(): { entry: string; workingDirectory: string } {
   if (app.isPackaged) {
     const workingDirectory = join(process.resourcesPath, "engine");
@@ -36,31 +56,59 @@ function enginePaths(): { entry: string; workingDirectory: string } {
   return { entry: join(workingDirectory, "dist", "src", "index.js"), workingDirectory };
 }
 
-function startEngine(): void {
-  if (process.env.VITE_DEV_SERVER_URL) return;
+async function startEngine(): Promise<void> {
+  if (quitting || disposing || process.env.VITE_DEV_SERVER_URL) return;
+  if (engineProcess && !engineProcess.killed) return;
   const { entry, workingDirectory } = enginePaths();
   if (!existsSync(entry)) {
-    console.error(`viAI engine entry point was not found: ${entry}`);
-    return;
+    throw new Error(`viAI engine entry point was not found: ${entry}`);
   }
-  engineProcess = execFile(process.execPath, [entry], {
+  await terminateOrphanedEngines(entry);
+  if (quitting || disposing) return;
+  const child = execFile(process.execPath, [entry], {
     cwd: workingDirectory,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", VIAI_DEVICE_SECURITY: "1" },
     windowsHide: true,
   });
-  engineProcess.on("error", (error) => console.error("Unable to start viAI engine", error));
-  engineProcess.stderr?.on("data", (output) => console.error(`viAI engine error: ${String(output).trim()}`));
+  engineProcess = child;
+  child.on("error", (error) => console.error("Unable to start viAI engine", error));
+  child.stderr?.on("data", (output) => console.error(`viAI engine error: ${String(output).trim()}`));
+  child.once("exit", () => { if (engineProcess === child) engineProcess = undefined; });
 }
 
-function createWindow(): void {
-  if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); return; }
+async function terminateOrphanedEngines(entry: string): Promise<void> {
+  if (process.platform !== "win32") return;
+  const escapedEntry = entry.replaceAll("'", "''");
+  const script = `$entry = '${escapedEntry}'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like "*$entry*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+  try { await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 10_000 }); } catch { /* A stale engine is best-effort cleanup after an ungraceful termination. */ }
+}
+
+function showMainWindow(): void {
+  if (!startupComplete) {
+    restoreAfterStartup = true;
+    splashWindow?.show();
+    splashWindow?.focus();
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) { createWindow(true); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createWindow(show = true): BrowserWindow {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (show && startupComplete) showMainWindow();
+    return mainWindow;
+  }
   const window = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1120,
     minHeight: 720,
     title: "viAI Desktop",
-    backgroundColor: "#f5f8ff",
+    show: false,
+    backgroundColor: "#101820",
     frame: false,
     webPreferences: {
       preload: join(__dirname, "preload.js"),
@@ -69,8 +117,14 @@ function createWindow(): void {
     },
   });
   mainWindow = window;
+  dashboardLoad = new Promise<void>((resolve, reject) => {
+    window.webContents.once("did-finish-load", () => resolve());
+    window.webContents.once("did-fail-load", (_event, _errorCode, errorDescription) => reject(new Error(`Dashboard could not load: ${errorDescription}`)));
+  });
+  window.once("ready-to-show", () => { if (show && startupComplete && !window.isDestroyed()) window.show(); });
   window.on("close", (event) => {
-    if (!quitting && backgroundService?.snapshot().settings.runAfterWindowCloses === true) { event.preventDefault(); window.hide(); }
+    const scanIsRunning = backgroundService?.currentScan()?.status === "running";
+    if (!quitting && (backgroundService?.snapshot().settings.runAfterWindowCloses === true || scanIsRunning)) { event.preventDefault(); window.hide(); }
   });
   window.on("minimize", () => {
     if (backgroundService?.snapshot().settings.minimizeToTray === true) window.hide();
@@ -80,36 +134,128 @@ function createWindow(): void {
   const devServer = process.env.VITE_DEV_SERVER_URL;
   if (devServer) void window.loadURL(devServer);
   else void window.loadFile(join(__dirname, "../dist/index.html"));
+  return window;
 }
 
-app.whenReady().then(() => {
+async function createSplashWindow(): Promise<void> {
+  if (splashWindow && !splashWindow.isDestroyed()) return;
+  const window = new BrowserWindow({
+    width: 540,
+    height: 430,
+    minWidth: 540,
+    minHeight: 430,
+    maxWidth: 540,
+    maxHeight: 430,
+    center: true,
+    show: false,
+    frame: false,
+    transparent: process.platform === "win32",
+    hasShadow: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: false,
+    backgroundColor: "#101820",
+    webPreferences: { preload: join(__dirname, "splashPreload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  splashWindow = window;
+  window.once("ready-to-show", () => { if (!quitting && !disposing) window.show(); });
+  window.on("closed", () => { if (splashWindow === window) splashWindow = undefined; });
+  const loaded = new Promise<void>((resolve, reject) => {
+    window.webContents.once("did-finish-load", () => { publishStartupProgress(startupManager?.progress.snapshot()); resolve(); });
+    window.webContents.once("did-fail-load", (_event, _errorCode, errorDescription) => reject(new Error(`Startup screen could not load: ${errorDescription}`)));
+  });
+  void window.loadFile(join(__dirname, "splash.html"));
+  await loaded;
+}
+
+function publishStartupProgress(progress: StartupProgress | undefined): void {
+  if (progress && splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send("startup:progress", progress);
+}
+
+async function prepareDashboard(): Promise<void> {
+  createWindow(false);
+  await dashboardLoad;
+}
+
+async function waitForEngineReady(): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await probeEngine()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("The local analysis engine did not become ready within 10 seconds.");
+}
+
+async function probeEngine(): Promise<boolean> {
+  try { return (await fetch("http://127.0.0.1:4117/health")).ok; } catch { return false; }
+}
+
+function configureStartup(): StartupManager {
+  if (startupManager) return startupManager;
+  const manager = new StartupManager();
+  manager.progress.subscribe(publishStartupProgress);
+  manager.register([
+    { id: "configuration", name: "Loading application configuration", weight: 5, execute: async () => { if (!process.env.VITE_DEV_SERVER_URL && !existsSync(enginePaths().entry)) throw new Error("The packaged local engine is missing."); } },
+    { id: "engine", name: "Initializing analysis, rules, and trust engines", weight: 25, dependencies: ["configuration"], execute: async () => { await startEngine(); await waitForEngineReady(); } },
+    { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["engine"], execute: async () => { backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
+    { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["persistence"], execute: async () => { deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; return { monitorUsbStorage: settings?.monitorUsbStorage === true, monitorUsbInsertion: settings?.monitorUsbInsertion === true, automaticallyScanUsb: settings?.automaticallyScanUsb === true }; }); await deviceSecurity.start(); } },
+    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType) => analyzeEngineFile(filePath, scanType), publishScan); await scanService.recover(); } },
+    { id: "notifications", name: "Preparing local notifications", weight: 5, dependencies: ["persistence"], execute: async () => { Notification.isSupported(); } },
+    { id: "tray", name: "Creating secure system tray service", weight: 5, dependencies: ["persistence"], execute: async () => { createTray(); } },
+    { id: "dashboard", name: "Preparing secure dashboard", weight: 15, dependencies: ["devices", "recovery", "notifications", "tray"], execute: prepareDashboard },
+  ]);
+  startupManager = manager;
+  return manager;
+}
+
+async function runStartup(): Promise<void> {
+  if (startupRunning || quitting || disposing) return;
+  startupRunning = true;
+  try {
+    const manager = configureStartup();
+    await manager.start();
+    startupComplete = true;
+    if (startupSnapshot?.settings.notifyBackgroundStarted === true) showNotification(startupSnapshot.settings, "viAI background protection", "Local monitoring is running.");
+    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send("startup:ready");
+    else completeStartupTransition();
+  } catch (error) {
+    console.error("viAI startup failed", error);
+    if (!splashWindow && !quitting && !disposing) await createSplashWindow();
+  } finally {
+    startupRunning = false;
+  }
+}
+
+function completeStartupTransition(): void {
+  if (!startupComplete || quitting || disposing) return;
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.destroy();
+  const startSilently = launchedInBackground && startupSnapshot?.settings.startSilently === true;
+  if (!startSilently || restoreAfterStartup) showMainWindow();
+  startEngineEventPolling();
+  void backgroundService?.loadHistory().catch((error) => console.error("Could not load deferred local history", error));
+}
+
+app.on("second-instance", () => { if (app.isReady()) showMainWindow(); });
+
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
-  startEngine();
-  backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground);
-  void backgroundService.initialize().then((snapshot) => {
-    applyStartup(snapshot.settings);
-    createTray();
-    if (!(process.argv.includes("--viai-background") && snapshot.settings.startSilently === true)) {
-      createWindow();
-      if (process.argv.includes("--viai-minimized") && snapshot.settings.startMinimized === true) mainWindow?.minimize();
-    }
-    if (snapshot.settings.notifyBackgroundStarted === true) showNotification(snapshot.settings, "viAI background protection", "Local monitoring is running.");
-    startEngineEventPolling();
-  });
-  deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => {
-    const settings = backgroundService?.snapshot().settings;
-    return { monitorUsbStorage: settings?.monitorUsbStorage === true, monitorUsbInsertion: settings?.monitorUsbInsertion === true, automaticallyScanUsb: settings?.automaticallyScanUsb === true };
-  });
-  void deviceSecurity.start();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  if (!launchedInBackground) await createSplashWindow();
+  await runStartup();
+  app.on("activate", () => showMainWindow());
 });
 
-app.on("window-all-closed", () => { if (!backgroundService?.snapshot().settings.runAfterWindowCloses && process.platform !== "darwin") { quitting = true; app.quit(); } });
+app.on("window-all-closed", () => {
+  const scanIsRunning = backgroundService?.currentScan()?.status === "running";
+  if (!backgroundService?.snapshot().settings.runAfterWindowCloses && !scanIsRunning && process.platform !== "darwin") { quitting = true; app.quit(); }
+});
 
-app.on("before-quit", () => { quitting = true; engineProcess?.kill(); if (engineEventTimer) clearInterval(engineEventTimer); });
-app.on("before-quit", () => deviceSecurity?.stop());
+app.on("before-quit", () => { quitting = true; disposeMainResources(); });
+app.on("will-quit", disposeMainResources);
+
+ipcMain.handle("startup:retry", () => runStartup());
+ipcMain.handle("startup:exit", () => { quitting = true; app.quit(); });
+ipcMain.handle("startup:complete-transition", () => completeStartupTransition());
 
 ipcMain.handle("dialog:pick-file", async () => {
   const result = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "All files", extensions: ["*"] }] });
@@ -150,6 +296,30 @@ ipcMain.handle("background:import", async (_event, serialized: string) => {
 });
 ipcMain.handle("background:clear-history", () => backgroundService?.clearHistory());
 
+ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", target?: string) => {
+  if (!scanService || !backgroundService || !["quick", "full", "folder"].includes(mode)) throw new Error("Scan service is not ready");
+  let files: string[];
+  if (mode === "quick") {
+    if (typeof target !== "string" || !existsSync(target)) throw new Error("Choose an existing file to scan");
+    files = [target];
+  } else if (mode === "folder") {
+    if (typeof target !== "string" || !existsSync(target)) throw new Error("Choose an existing folder to scan");
+    files = await collectCandidates([target], 1_000);
+  } else {
+    const home = homedir();
+    const roots = ["C:\\", "C:\\Windows\\Temp", join(home, "Downloads"), join(home, "Desktop"), join(home, "Documents"), join(home, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup"), "C:\\ProgramData", "C:\\Program Files", "C:\\Program Files (x86)", ...await removableDrives()];
+    files = await collectCandidates(roots.filter(existsSync), 2_500);
+    target = "Windows system locations";
+  }
+  const settings = backgroundService.snapshot().settings;
+  const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
+  const parallel = configuredParallel || (settings.performanceMode === "low" ? 1 : settings.performanceMode === "high" ? 8 : 4);
+  return scanService.start(mode, target ?? "", files, parallel);
+});
+ipcMain.handle("scan:pause", () => scanService?.pause());
+ipcMain.handle("scan:resume", () => scanService?.resume());
+ipcMain.handle("scan:cancel", () => scanService?.cancel());
+
 ipcMain.handle("device-security:snapshot", () => deviceSecurity?.snapshot() ?? { devices: [], history: [], scans: [], policies: {} });
 ipcMain.handle("device-security:set-trust", async (_event, deviceId: string, trusted: boolean) => {
   if (typeof deviceId !== "string" || typeof trusted !== "boolean") throw new Error("Invalid device trust request");
@@ -185,7 +355,10 @@ ipcMain.handle("scan:system-roots", async () => {
 const engineUrl = "http://127.0.0.1:4117/analyze";
 const engineHealthUrl = "http://127.0.0.1:4117/health";
 
-ipcMain.handle("engine:analyze", async (_event, filePath: string) => {
+ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
+
+async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file"): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
   const response = await fetch(engineUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -200,10 +373,10 @@ ipcMain.handle("engine:analyze", async (_event, filePath: string) => {
     throw new Error(`Engine returned an invalid response (${response.status}): ${detail}`);
   }
   if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
-  await backgroundService?.recordAnalysis(body);
+  await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt);
   notifyAnalysis(body);
   return body;
-});
+}
 
 ipcMain.handle("engine:probe", async () => {
   try {
@@ -287,11 +460,12 @@ function applyStartup(settings: Record<string, unknown>): void {
 }
 
 function createTray(): void {
-  if (tray) return;
+  if (tray && !tray.isDestroyed()) return;
+  tray = undefined;
   const iconPath = join(app.getAppPath(), "public", "icon.ico");
   tray = new Tray(existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty());
   tray.setToolTip("viAI Local Security Engine");
-  tray.on("double-click", () => createWindow());
+  tray.on("double-click", () => showMainWindow());
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open viAI", click: () => createWindow() },
     { label: "Quick Scan", click: () => { createWindow(); mainWindow?.webContents.send("background:command", "quick-scan"); } },
@@ -354,4 +528,23 @@ async function syncEngineEvents(): Promise<void> {
   } catch {
     // The local engine may not have completed startup yet.
   }
+}
+
+function disposeMainResources(): void {
+  if (disposing) return;
+  disposing = true;
+  if (engineEventTimer) clearInterval(engineEventTimer);
+  engineEventTimer = undefined;
+  deviceSecurity?.stop();
+  deviceSecurity = undefined;
+  if (tray) {
+    tray.removeAllListeners();
+    tray.destroy();
+    tray = undefined;
+  }
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.destroy();
+  splashWindow = undefined;
+  if (engineProcess && !engineProcess.killed) engineProcess.kill();
+  engineProcess = undefined;
+}
 }

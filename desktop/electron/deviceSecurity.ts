@@ -94,23 +94,32 @@ export class DeviceSecurityService {
   private history: DeviceHistoryRecord[] = [];
   private scans: DeviceScanRecord[] = [];
   private listener?: ChildProcessWithoutNullStreams;
+  private refreshTimer?: NodeJS.Timeout;
   private refreshQueued = false;
+  private started = false;
   private readonly activeScans = new Set<string>();
 
   constructor(private readonly dataPath: string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true })) {}
 
   async start(): Promise<void> {
+    if (this.started) return;
+    this.started = true;
     const stored = await this.readState();
     this.devices = stored.devices;
     this.history = stored.history;
     this.scans = stored.scans;
     await this.refresh();
-    if (process.platform === "win32") this.startPnPListener();
+    if (this.started && process.platform === "win32") this.startPnPListener();
   }
 
   stop(): void {
+    this.started = false;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
+    this.refreshQueued = false;
     this.listener?.kill();
     this.listener = undefined;
+    this.activeScans.clear();
   }
 
   snapshot(): DeviceSecuritySnapshot {
@@ -175,6 +184,7 @@ export class DeviceSecurityService {
   }
 
   private startPnPListener(): void {
+    if (this.listener) return;
     const script = "$null = Register-WmiEvent -Class Win32_DeviceChangeEvent -SourceIdentifier viAI_DeviceChange; while ($true) { $event = Wait-Event -SourceIdentifier viAI_DeviceChange; if ($null -ne $event) { Remove-Event -EventIdentifier $event.EventIdentifier; [Console]::Out.WriteLine('change'); } }";
     this.listener = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true });
     this.listener.stdout.setEncoding("utf8");
@@ -184,15 +194,17 @@ export class DeviceSecurityService {
   }
 
   private queueRefresh(): void {
-    if (this.refreshQueued) return;
+    if (!this.started || this.refreshQueued) return;
     this.refreshQueued = true;
-    setTimeout(() => {
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
       this.refreshQueued = false;
-      void this.refresh();
+      if (this.started) void this.refresh();
     }, 400);
   }
 
   private async refresh(): Promise<void> {
+    if (!this.started) return;
     const detected = await discoverWindowsDevices();
     const now = new Date().toISOString();
     const prior = new Map(this.devices.map((device) => [device.id, device]));
@@ -201,6 +213,7 @@ export class DeviceSecurityService {
       if (!next.some((entry) => entry.id === device.id) && device.status !== "disconnected") next.push({ ...device, status: "disconnected", lastSeen: now });
     }
     const events = changes(this.devices, next, now);
+    if (!this.started) return;
     this.devices = next;
     if (events.length > 0) this.history = [...events, ...this.history].slice(0, 2_000);
     await this.persist();

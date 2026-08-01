@@ -31,6 +31,13 @@ contextBridge.exposeInMainWorld("viai", {
   chooseFile: () => ipcRenderer.invoke("dialog:pick-file") as Promise<string | undefined>,
   chooseFolder: () => ipcRenderer.invoke("dialog:pick-folder") as Promise<string | undefined>,
   openPath: (filePath: string) => ipcRenderer.invoke("shell:open-path", filePath) as Promise<string>,
+  scans: {
+    start: (mode: "quick" | "full" | "folder", target?: string) => ipcRenderer.invoke("scan:start", mode, target) as Promise<unknown>,
+    pause: () => ipcRenderer.invoke("scan:pause") as Promise<void>,
+    resume: () => ipcRenderer.invoke("scan:resume") as Promise<void>,
+    cancel: () => ipcRenderer.invoke("scan:cancel") as Promise<void>,
+    onEvent: (listener: (update: unknown) => void) => { const handler = (_event: Electron.IpcRendererEvent, update: unknown) => listener(update); ipcRenderer.on("scan:event", handler); return () => ipcRenderer.removeListener("scan:event", handler); },
+  },
   listFiles: (roots: string[], maxFiles?: number) => ipcRenderer.invoke("scan:list-files", roots, maxFiles) as Promise<string[]>,
   systemRoots: () => ipcRenderer.invoke("scan:system-roots") as Promise<string[]>,
   analyzeFile: (filePath: string) => ipcRenderer.invoke("engine:analyze", filePath) as Promise<unknown>,

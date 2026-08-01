@@ -79,9 +79,24 @@ function setMonitoringStatus(updates: Partial<MonitoringStatus>): MonitoringStat
 applyMonitoring();
 
 const port = Number(process.env.VIAI_PORT ?? 4117);
-createLocalApi(pipeline, {
+const server = createLocalApi(pipeline, {
   getRecentAnalyses: () => recentAnalyses,
   getRecentObservations: () => recentObservations,
   getMonitoringStatus: () => monitoring,
   setMonitoringStatus,
 }).listen(port, "127.0.0.1", () => console.log(`viAI Local Security Engine listening on http://127.0.0.1:${port}`));
+
+let shuttingDown = false;
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  downloadMonitor.stop();
+  executableMonitor.stop();
+  usbMonitor.stop();
+  processMonitor.stop();
+  windowsConfigurationMonitor.stop();
+  server.close(() => process.exit(0));
+}
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);

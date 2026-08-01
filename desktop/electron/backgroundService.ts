@@ -19,18 +19,45 @@ export interface BackgroundHistoryRecord {
   matchedRules?: string[];
   engineVersion: string;
   detail: string;
+  report?: Record<string, unknown>;
+  trustIndicators?: string[];
+  scanDurationMs?: number;
+  scanType?: "quick" | "full" | "folder" | "single-file" | "realtime";
+}
+
+export type ScanStatus = "running" | "paused" | "completed" | "cancelled" | "failed";
+
+export interface PersistedScanState {
+  id: string;
+  mode: "quick" | "full" | "folder";
+  target: string;
+  startedAt: string;
+  updatedAt: string;
+  currentFile: string;
+  filesCompleted: number;
+  filesRemaining: number;
+  totalFiles: number;
+  progress: number;
+  currentStage: string;
+  status: ScanStatus;
+  investigationCount: number;
+  pausedAt?: string;
+  pausedDurationMs: number;
+  estimatedRemainingMs?: number;
+  pendingFiles: string[];
 }
 
 export interface BackgroundSnapshot {
   settings: BackgroundSettings;
   history: BackgroundHistoryRecord[];
   activeMonitors: string[];
+  activeScan?: Omit<PersistedScanState, "pendingFiles">;
 }
 
-interface StoredBackgroundState { settings?: unknown; history?: unknown; }
+interface StoredBackgroundState { settings?: unknown; history?: unknown; activeScan?: unknown; }
 
 export const recommendedSettings: BackgroundSettings = Object.freeze({
-  backgroundProtection: true, runAfterWindowCloses: true, launchOnStartup: true, startMinimized: false, startSilently: false, openDashboardAfterStartup: true, minimizeToTray: true, windowsNotifications: true, soundNotifications: false,
+  backgroundProtection: true, runAfterWindowCloses: true, launchOnStartup: true, startMinimized: false, startSilently: false, openDashboardAfterStartup: true, minimizeToTray: true, windowsNotifications: true, soundNotifications: false, desktopDarkMode: false,
   monitorFileCreation: true, monitorFileModification: true, monitorFileRename: true, monitorFileDeletion: false, monitorDownloads: true, monitorDesktop: false, monitorDocuments: false, monitorUsbStorage: true, monitorNetworkShares: false,
   scanExecutables: true, scanDlls: true, scanScripts: true, scanOfficeDocuments: false, scanArchives: false, scanPdfs: false, scanInstallers: true, scanShortcuts: false, scanBatchFiles: true, scanPowerShellScripts: true, scanJavaScriptFiles: true, scanPythonScripts: false, scanUnknownFileTypes: false,
   automaticDownloadScan: true, scanBrowserDownloads: true, scanTorrentDownloads: false, scanCompressedDownloads: false, delayExecutionUntilScanCompletes: false,
@@ -47,36 +74,50 @@ export const factorySettings: BackgroundSettings = Object.freeze({ ...recommende
 export class BackgroundService {
   private settings: BackgroundSettings = { ...recommendedSettings };
   private history: BackgroundHistoryRecord[] = [];
+  private legacyHistory: BackgroundHistoryRecord[] = [];
+  private historyLoaded = false;
   private activeMonitors: string[] = [];
+  private activeScan?: PersistedScanState;
+  private mutation: Promise<void> = Promise.resolve();
+  private readonly historyPath: string;
 
-  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void) {}
+  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void) { this.historyPath = join(dirname(dataPath), "background-history.json"); }
 
   async initialize(): Promise<BackgroundSnapshot> {
     const stored = await this.read();
     this.settings = validateSettings(stored.settings);
-    this.history = validateHistory(stored.history);
+    this.legacyHistory = validateHistory(stored.history);
+    this.activeScan = validateScan(stored.activeScan);
     await this.apply();
     return this.snapshot();
   }
 
-  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: [...this.history], activeMonitors: [...this.activeMonitors] }; }
-  async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); await this.persist(); this.onChanged(this.snapshot()); return this.snapshot(); }
-  async restoreRecommended(): Promise<BackgroundSnapshot> { this.settings = { ...recommendedSettings }; await this.apply(); await this.persist(); this.onChanged(this.snapshot()); return this.snapshot(); }
-  async restoreFactory(): Promise<BackgroundSnapshot> { this.settings = { ...factorySettings }; await this.apply(); await this.persist(); this.onChanged(this.snapshot()); return this.snapshot(); }
+  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: [...this.history], activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined }; }
+  currentScan(): PersistedScanState | undefined { return this.activeScan ? { ...this.activeScan, pendingFiles: [...this.activeScan.pendingFiles] } : undefined; }
+  async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); await this.persist(); return this.publish(); }); }
+  async restoreRecommended(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...recommendedSettings }; await this.apply(); await this.persist(); return this.publish(); }); }
+  async restoreFactory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...factorySettings }; await this.apply(); await this.persist(); return this.publish(); }); }
   exportSettings(): string { return JSON.stringify(this.settings, null, 2); }
-  async importSettings(serialized: string): Promise<BackgroundSnapshot> { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); await this.persist(); this.onChanged(this.snapshot()); return this.snapshot(); }
-  async clearHistory(): Promise<void> { this.history = []; await this.persist(); this.onChanged(this.snapshot()); }
+  async importSettings(serialized: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); await this.persist(); return this.publish(); }); }
+  async clearHistory(): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = []; await this.persistHistory(); this.publish(); }); }
+  async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
+  async saveScan(scan: PersistedScanState | undefined): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; await this.persist(); return this.publish(); }); }
 
-  async recordAnalysis(body: unknown): Promise<void> {
+  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number): Promise<void> {
     const analysis = analysisRecord(body);
     if (!analysis) return;
-    const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
-    this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: "0.1.5", detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}` }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
-    await this.persist();
-    this.onChanged(this.snapshot());
+    await this.enqueue(async () => {
+      await this.ensureHistoryLoaded();
+      const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
+      const report = cloneRecord(analysis);
+      const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
+      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: "0.1.6", detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
+      await this.persistHistory();
+      this.publish();
+    });
   }
 
-  async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { if (this.history.some((record) => record.id === id)) return; this.history = [{ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: "0.1.5", detail }, ...this.history]; await this.persist(); this.onChanged(this.snapshot()); }
+  async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); if (this.history.some((record) => record.id === id)) return; this.history = [{ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: "0.1.6", detail }, ...this.history]; await this.persistHistory(); this.publish(); }); }
 
   private async apply(): Promise<void> {
     const enabled = this.settings.backgroundProtection === true;
@@ -122,7 +163,21 @@ export class BackgroundService {
     ] : [];
   }
 
-  private async persist(): Promise<void> { await mkdir(dirname(this.dataPath), { recursive: true }); const temporary = `${this.dataPath}.tmp`; await writeFile(temporary, JSON.stringify({ settings: this.settings, history: this.history }, null, 2), "utf8"); await rename(temporary, this.dataPath); }
+  private publish(): BackgroundSnapshot { const snapshot = this.snapshot(); this.onChanged(snapshot); return snapshot; }
+  private async enqueue<T>(operation: () => Promise<T>): Promise<T> { const result = this.mutation.then(operation, operation); this.mutation = result.then(() => undefined, () => undefined); return result; }
+  private async ensureHistoryLoaded(): Promise<void> {
+    if (this.historyLoaded) return;
+    if (existsSync(this.historyPath)) {
+      try { this.history = validateHistory(JSON.parse(await readFile(this.historyPath, "utf8"))); } catch { this.history = []; }
+    } else {
+      this.history = this.legacyHistory;
+      await this.persistHistory();
+    }
+    this.legacyHistory = [];
+    this.historyLoaded = true;
+  }
+  private async persist(): Promise<void> { await mkdir(dirname(this.dataPath), { recursive: true }); const temporary = `${this.dataPath}.tmp`; const legacy = !this.historyLoaded && this.legacyHistory.length ? { history: this.legacyHistory } : {}; await writeFile(temporary, JSON.stringify({ settings: this.settings, activeScan: this.activeScan, ...legacy }, null, 2), "utf8"); await rename(temporary, this.dataPath); }
+  private async persistHistory(): Promise<void> { await mkdir(dirname(this.historyPath), { recursive: true }); const temporary = `${this.historyPath}.tmp`; await writeFile(temporary, JSON.stringify(this.history, null, 2), "utf8"); await rename(temporary, this.historyPath); }
   private async read(): Promise<StoredBackgroundState> { if (!existsSync(this.dataPath)) return {}; try { return JSON.parse(await readFile(this.dataPath, "utf8")) as StoredBackgroundState; } catch { return {}; } }
 }
 
@@ -141,6 +196,15 @@ function validateSettings(value: unknown): BackgroundSettings {
 
 function validEnum(key: string, value: string): boolean { return key === "mediumRiskAction" ? ["ignore", "notify", "sandbox", "ai"].includes(value) : key === "highRiskAction" ? ["notify", "sandbox", "ai"].includes(value) : key === "performanceMode" ? ["low", "balanced", "high"].includes(value) : key === "scanPriority" ? ["low", "normal", "high"].includes(value) : false; }
 function validateHistory(value: unknown): BackgroundHistoryRecord[] { return Array.isArray(value) ? value.filter((entry): entry is BackgroundHistoryRecord => Boolean(entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string" && typeof (entry as { detail?: unknown }).detail === "string")) : []; }
+function validateScan(value: unknown): PersistedScanState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const scan = value as Partial<PersistedScanState>;
+  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["running", "paused", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
+  const number = (candidate: unknown, fallback = 0) => typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? candidate : fallback;
+  return { id: scan.id, mode: scan.mode as PersistedScanState["mode"], target: typeof scan.target === "string" ? scan.target : "", startedAt: typeof scan.startedAt === "string" ? scan.startedAt : new Date().toISOString(), updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(), currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "", filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined, pendingFiles: [...scan.pendingFiles] };
+}
+function publicScan(scan: PersistedScanState): Omit<PersistedScanState, "pendingFiles"> { const { pendingFiles: _pendingFiles, ...publicState } = scan; return publicState; }
+function cloneRecord(value: Record<string, any>): Record<string, unknown> { return JSON.parse(JSON.stringify(value)) as Record<string, unknown>; }
 function strings(value: SettingValue | undefined): readonly string[] { return Array.isArray(value) ? value : []; }
 function analysisRecord(value: unknown): Record<string, any> | undefined { return value && typeof value === "object" && "analysis" in value && (value as { analysis?: unknown }).analysis && typeof (value as { analysis: unknown }).analysis === "object" ? (value as { analysis: Record<string, any> }).analysis : undefined; }
 

@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:electron": "wait-on tcp:5173 && set VITE_DEV_SERVER_URL=http://127.0.0.1:5173 && electron .",
     "desktop": "concurrently --kill-others-on-fail \"npm:dev:engine\" \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "build": "npm --prefix .. run build && tsc -b && vite build && tsc -p tsconfig.electron.json && node -e \"require('fs').copyFileSync('electron/package.json', 'dist-electron/package.json')\"",
+    "build": "npm --prefix .. run build && tsc -b && vite build && tsc -p tsconfig.electron.json && node -e \"const fs=require('fs'); fs.copyFileSync('electron/package.json', 'dist-electron/package.json'); fs.copyFileSync('electron/splash.html', 'dist-electron/splash.html')\"",
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "start": "npm run build && electron .",
     "lint": "eslint .",

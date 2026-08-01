@@ -144,6 +144,20 @@ function AppRoutes() {
   const darkMode = useSecurityStore((state) => state.darkMode);
   useEffect(() => { document.documentElement.dataset.theme = darkMode ? "dark" : "light"; }, [darkMode]);
   useEffect(() => {
+    let active = true;
+    const syncBackground = (value: unknown) => {
+      if (!active || !value || typeof value !== "object") return;
+      const snapshot = value as { settings?: Record<string, unknown>; activeScan?: Record<string, unknown> };
+      useSecurityStore.getState().hydrateBackground(snapshot.settings ?? {}, snapshot.activeScan);
+    };
+    void window.viai?.background.snapshot().then(syncBackground);
+    return window.viai?.background.onChanged(syncBackground);
+  }, []);
+  useEffect(() => window.viai?.scans.onEvent((value) => {
+    const update = value as { scan?: Record<string, unknown> };
+    if (update.scan) useSecurityStore.getState().hydrateBackground({}, update.scan);
+  }), []);
+  useEffect(() => {
     let cancelled = false;
     const syncEngine = async () => {
       const online = await probeEngine();

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>viAI Local Security Engine</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI Variable", "Aptos", sans-serif; background: transparent; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: transparent; color: #edf7ff; overflow: hidden; }
+    .surface { width: 100vw; height: 100vh; padding: 1px; background: linear-gradient(135deg, #18212c, #0b1017 56%, #111a25); border: 1px solid #38516a; border-radius: 14px; box-shadow: 0 24px 60px #00000080; }
+    .content { height: 100%; display: grid; place-content: center; justify-items: center; padding: 46px; text-align: center; background: radial-gradient(circle at 50% 18%, #1a496133, transparent 42%); border-radius: 13px; }
+    .mark { width: 82px; height: 82px; display: grid; place-items: center; overflow: hidden; border: 1px solid #5ad3e899; border-radius: 20px; background: linear-gradient(145deg, #1b6790, #123047); color: #edfcff; font-size: 31px; font-weight: 750; box-shadow: 0 0 34px #39c8de38; }
+    .mark img { width: 100%; height: 100%; object-fit: cover; }
+    h1 { margin: 20px 0 7px; font-size: 21px; font-weight: 650; letter-spacing: 0; }
+    p { margin: 0; color: #9bb2c6; font-size: 13px; }
+    .progress-area { width: 360px; margin-top: 32px; text-align: left; }
+    .status { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; color: #c8dceb; font-size: 12px; }
+    .status span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .percent { color: #71d9e7; font-variant-numeric: tabular-nums; }
+    .track { height: 5px; overflow: hidden; margin-top: 10px; border-radius: 99px; background: #263847; }
+    .bar { width: 0%; height: 100%; background: linear-gradient(90deg, #4ba6d8, #6ce2db); box-shadow: 0 0 14px #62dde399; transition: width 180ms ease-out; }
+    .pulse { width: 7px; height: 7px; margin: 20px 0 0; border-radius: 50%; background: #65dbe4; box-shadow: 0 0 0 0 #65dbe466; animation: pulse 1.7s ease-out infinite; }
+    .error { display: none; width: 360px; margin-top: 28px; text-align: left; }
+    .error strong { display: block; color: #ffb8bd; font-size: 14px; }
+    .error pre { max-height: 72px; overflow: auto; margin: 8px 0 14px; padding: 9px; border: 1px solid #64343b; border-radius: 6px; background: #25171c; color: #e3b4b7; font: 11px/1.4 "Cascadia Code", monospace; white-space: pre-wrap; }
+    .actions { display: flex; gap: 8px; }
+    button { height: 33px; border: 1px solid #3f647d; border-radius: 6px; background: #193950; color: #eaf8ff; padding: 0 13px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
+    button.secondary { border-color: #4a5059; background: #20262d; color: #c7d2db; }
+    .surface.ready .content { animation: finish 420ms ease forwards; }
+    .surface.failed .progress-area, .surface.failed .pulse { display: none; }
+    .surface.failed .error { display: block; }
+    @keyframes pulse { 70% { box-shadow: 0 0 0 8px #65dbe400; } 100% { box-shadow: 0 0 0 0 #65dbe400; } }
+    @keyframes finish { to { opacity: 0; transform: scale(.985); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="surface" id="surface">
+    <section class="content">
+      <div class="mark" aria-label="viAI"><img src="../public/icon.ico" alt="" onerror="this.remove()" />V</div>
+      <h1>viAI Local Security Engine</h1>
+      <p id="subtitle">Initializing...</p>
+      <div class="progress-area">
+        <div class="status"><span id="status">Preparing secure startup</span><span class="percent" id="percent">0%</span></div>
+        <div class="track"><div class="bar" id="bar"></div></div>
+      </div>
+      <div class="pulse" aria-hidden="true"></div>
+      <section class="error" aria-live="assertive"><strong>Initialization failed</strong><pre id="diagnostic"></pre><div class="actions"><button id="retry">Retry</button><button id="exit" class="secondary">Exit</button></div></section>
+    </section>
+  </main>
+  <script>
+    const surface = document.getElementById("surface");
+    const status = document.getElementById("status");
+    const subtitle = document.getElementById("subtitle");
+    const percent = document.getElementById("percent");
+    const bar = document.getElementById("bar");
+    const diagnostic = document.getElementById("diagnostic");
+    window.viaiStartup.onProgress((event) => {
+      if (event.type === "failed") { surface.classList.add("failed"); subtitle.textContent = event.task ? event.task.name : "Startup"; diagnostic.textContent = event.error || "An unknown startup error occurred."; return; }
+      surface.classList.remove("failed");
+      status.textContent = event.type === "ready" ? "Ready" : event.task ? event.task.name : "Preparing secure startup";
+      percent.textContent = `${event.progress}%`; bar.style.width = `${event.progress}%`;
+    });
+    window.viaiStartup.onReady(() => {
+      surface.classList.add("ready");
+      const complete = () => window.viaiStartup.completeTransition();
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) complete();
+      else {
+        const onFinish = (event) => { if (event.target === surface && event.animationName === "finish") { surface.removeEventListener("animationend", onFinish); complete(); } };
+        surface.addEventListener("animationend", onFinish);
+      }
+    });
+    document.getElementById("retry").addEventListener("click", () => window.viaiStartup.retry());
+    document.getElementById("exit").addEventListener("click", () => window.viaiStartup.exit());
+  </script>
+</body>
+</html>

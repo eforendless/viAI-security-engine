@@ -12,6 +12,10 @@ export interface ScanState {
   investigationCount: number;
   currentPath: string;
   startedAt?: number;
+  status?: "running" | "paused" | "completed" | "cancelled" | "failed";
+  stage?: string;
+  estimatedRemainingMs?: number;
+  pausedDurationMs?: number;
 }
 
 interface SecurityState {
@@ -37,6 +41,7 @@ interface SecurityState {
   setDarkMode(value: boolean): void;
   setPerformanceMode(value: SecurityState["performanceMode"]): void;
   setThreadCount(value: number): void;
+  hydrateBackground(settings: Record<string, unknown>, scan?: Record<string, unknown>): void;
 }
 
 const idleScan: ScanState = { active: false, paused: false, cancelled: false, mode: "quick", target: "", total: 0, completed: 0, investigationCount: 0, currentPath: "" };
@@ -53,7 +58,7 @@ export const useSecurityStore = create<SecurityState>((set) => ({
   threadCount: 4,
   setEngineOnline: (engineOnline) => set({ engineOnline }),
   addHistory: (analysis) => set((state) => state.history.some((item) => item.hashes.sha256 === analysis.hashes.sha256 && item.analyzedAt === analysis.analyzedAt) ? state : ({ history: [{ ...analysis, id: crypto.randomUUID() }, ...state.history].slice(0, 500) })),
-  beginScan: (mode, target, total) => set({ scan: { active: true, paused: false, cancelled: false, mode, target, total, completed: 0, investigationCount: 0, currentPath: "Preparing local analysis...", startedAt: Date.now() } }),
+  beginScan: (mode, target, total) => set({ scan: { active: true, paused: false, cancelled: false, mode, target, total, completed: 0, investigationCount: 0, currentPath: "Preparing local analysis...", startedAt: Date.now(), status: "running" } }),
   setProgress: (completed, currentPath, investigationCount) => set((state) => ({ scan: { ...state.scan, completed, currentPath, investigationCount } })),
   pauseScan: () => set((state) => ({ scan: { ...state.scan, paused: true } })),
   resumeScan: () => set((state) => ({ scan: { ...state.scan, paused: false } })),
@@ -64,4 +69,16 @@ export const useSecurityStore = create<SecurityState>((set) => ({
   setDarkMode: (darkMode) => set({ darkMode }),
   setPerformanceMode: (performanceMode) => set({ performanceMode }),
   setThreadCount: (threadCount) => set({ threadCount }),
+  hydrateBackground: (settings, remoteScan) => set((state) => {
+    const status = typeof remoteScan?.status === "string" ? remoteScan.status : undefined;
+    const mode = remoteScan?.mode === "quick" || remoteScan?.mode === "full" || remoteScan?.mode === "folder" ? remoteScan.mode : state.scan.mode;
+    const number = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
+    const active = status === "running" || status === "paused";
+    return {
+      darkMode: "desktopDarkMode" in settings ? settings.desktopDarkMode === true : state.darkMode,
+      performanceMode: "performanceMode" in settings ? settings.performanceMode === "low" ? "quiet" : settings.performanceMode === "high" ? "performance" : "balanced" : state.performanceMode,
+      threadCount: "maximumParallelScans" in settings ? number(settings.maximumParallelScans, 0) || 4 : state.threadCount,
+      scan: remoteScan ? { active, paused: status === "paused", cancelled: status === "cancelled", mode, target: typeof remoteScan.target === "string" ? remoteScan.target : "", total: number(remoteScan.totalFiles, 0), completed: number(remoteScan.filesCompleted, 0), investigationCount: number(remoteScan.investigationCount, 0), currentPath: typeof remoteScan.currentFile === "string" ? remoteScan.currentFile : "", startedAt: typeof remoteScan.startedAt === "string" ? Date.parse(remoteScan.startedAt) : undefined, status: status as ScanState["status"], stage: typeof remoteScan.currentStage === "string" ? remoteScan.currentStage : undefined, estimatedRemainingMs: typeof remoteScan.estimatedRemainingMs === "number" ? remoteScan.estimatedRemainingMs : undefined, pausedDurationMs: number(remoteScan.pausedDurationMs, 0) } : state.scan,
+    };
+  }),
 }));

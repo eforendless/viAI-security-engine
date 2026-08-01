@@ -27,7 +27,7 @@
     .actions { display: flex; gap: 8px; }
     button { height: 33px; border: 1px solid #3f647d; border-radius: 6px; background: #193950; color: #eaf8ff; padding: 0 13px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
     button.secondary { border-color: #4a5059; background: #20262d; color: #c7d2db; }
-    .surface.ready .content { animation: finish 420ms ease forwards; }
+    .surface.ready { animation: finish 420ms ease forwards; }
     .surface.failed .progress-area, .surface.failed .pulse { display: none; }
     .surface.failed .error { display: block; }
     @keyframes pulse { 70% { box-shadow: 0 0 0 8px #65dbe400; } 100% { box-shadow: 0 0 0 0 #65dbe400; } }

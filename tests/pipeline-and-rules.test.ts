@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AnalysisPipeline } from "../src/core/pipeline.js";
+import { TrustAssessmentEngine, TrustRegistry, type TrustEvaluator } from "../packages/core/src/trust/index.js";
+import { LocalReputationDatabase } from "../src/reputation/localDatabase.js";
 import { RuleEngine, RuleLoader, VrlRuleParser } from "../packages/core/src/rules/index.js";
 
 test("compiled VRL rules identify unsigned executable candidates from downloads", async () => {
@@ -25,13 +27,53 @@ test("pipeline records local evidence and never executes its input", async () =>
     await writeFile(inputPath, "this is a harmless static-analysis fixture");
   }
   try {
-    const pipeline = new AnalysisPipeline({ rulesDirectory: join(process.cwd(), "rules"), reputationDatabasePath: databasePath });
+    const testTrustEvaluator: TrustEvaluator = {
+      id: "pipeline-test-trust",
+      evaluate: async () => [{ id: "PIPELINE_TRUST", weight: 30, evidence: "Pipeline trust evaluator ran.", source: "test" }],
+    };
+    const pipeline = new AnalysisPipeline({
+      rulesDirectory: join(process.cwd(), "rules"),
+      reputationDatabasePath: databasePath,
+      trustAssessmentEngine: new TrustAssessmentEngine(new TrustRegistry([testTrustEvaluator])),
+    });
     const result = await pipeline.analyze(inputPath, "download");
     assert.equal(result.metadata.isExecutableCandidate, true);
     assert.equal(result.peMetadata.isPe, false);
     assert.equal(result.hashes.sha256.length, 64);
     assert.ok(result.evidence.length > 0);
     assert.equal(result.staticAnalysisReport.fileHash, result.hashes.sha256);
+    assert.equal(result.trustScore, 30);
+    assert.equal(result.staticAnalysisReport.trustIndicators[0]?.id, "PIPELINE_TRUST");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reputation database retains all parallel updates as valid JSON", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-reputation-"));
+  const databasePath = join(directory, "reputation.json");
+  const database = new LocalReputationDatabase(databasePath);
+  try {
+    await Promise.all(Array.from({ length: 32 }, (_, index) => database.recordSeen(`hash-${index}`, `file-${index}.exe`)));
+    const records = JSON.parse(await readFile(databasePath, "utf8")) as Array<{ hash: string }>;
+    assert.equal(records.length, 32);
+    assert.deepEqual(new Set(records.map((record) => record.hash)), new Set(Array.from({ length: 32 }, (_, index) => `hash-${index}`)));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reputation database recovers from malformed stored JSON", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-reputation-"));
+  const databasePath = join(directory, "reputation.json");
+  const database = new LocalReputationDatabase(databasePath);
+  try {
+    await writeFile(databasePath, "[] trailing-data", "utf8");
+    assert.deepEqual(await database.lookup("missing-hash"), { score: 0, evidence: [] });
+    await database.recordSeen("recovered-hash", "recovered.exe");
+    const records = JSON.parse(await readFile(databasePath, "utf8")) as Array<{ hash: string }>;
+    assert.deepEqual(records.map((record) => record.hash), ["recovered-hash"]);
+    assert.ok((await readdir(directory)).some((name) => name.startsWith("reputation.json.corrupt-")));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

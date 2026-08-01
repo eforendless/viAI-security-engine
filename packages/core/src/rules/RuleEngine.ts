@@ -5,6 +5,7 @@ import { RuleEvaluator } from "./RuleEvaluator.js";
 import { RuleLoader } from "./RuleLoader.js";
 import { RuleRegistry } from "./RuleRegistry.js";
 import type { StaticAnalysisReport } from "./RuleResult.js";
+import { emptyTrustResult, type TrustResult } from "../trust/TrustResult.js";
 
 export class RuleEngine {
   constructor(
@@ -19,9 +20,9 @@ export class RuleEngine {
     this.cache.replace(new RuleRegistry(rules));
   }
 
-  evaluate(context: RuleContext, metadata: unknown): StaticAnalysisReport {
+  evaluate(context: RuleContext, metadata: unknown, trust: TrustResult = emptyTrustResult()): StaticAnalysisReport {
     const snapshot = this.cache.get();
-    return this.aggregator.aggregate(context.file.hash, this.evaluator.evaluate(snapshot, context), metadata);
+    return this.aggregator.aggregate(context.file.hash, this.evaluator.evaluate(snapshot, context), metadata, trust);
   }
 
   ruleCount(): number { return this.cache.get().rules.length; }

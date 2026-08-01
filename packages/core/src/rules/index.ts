@@ -9,4 +9,7 @@ export { RuleEngine } from "./RuleEngine.js";
 export { RuleEvaluator } from "./RuleEvaluator.js";
 export { RuleLoader, RuleLoadError } from "./RuleLoader.js";
 export { RiskAggregator } from "./RiskAggregator.js";
+export { DecisionEngine } from "./DecisionEngine.js";
+export type { DecisionInput, DecisionPolicy } from "./DecisionEngine.js";
 export { VrlRuleParser } from "./vrl/VrlRuleParser.js";
+export * from "../trust/index.js";

@@ -14,6 +14,9 @@ export interface EngineAnalysis {
   heuristicScore: number;
   reputationScore: number;
   finalRiskScore: number;
+  trustScore: number;
+  overallScore: number;
+  confidence: number;
   riskLevel: RiskLevel;
   decision: string;
   recommendation: string;
@@ -22,6 +25,9 @@ export interface EngineAnalysis {
 
 export interface EngineResponse {
   riskScore: number;
+  trustScore: number;
+  overallScore: number;
+  confidence: number;
   riskLevel: RiskLevel;
   decision: string;
   recommendation: string;

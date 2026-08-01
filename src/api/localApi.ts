@@ -48,6 +48,9 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
       const analysis = await pipeline.analyze(body.path);
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
         riskScore: analysis.finalRiskScore,
+        trustScore: analysis.trustScore,
+        overallScore: analysis.overallScore,
+        confidence: analysis.confidence,
         riskLevel: analysis.riskLevel,
         decision: analysis.decision,
         recommendation: analysis.recommendation,

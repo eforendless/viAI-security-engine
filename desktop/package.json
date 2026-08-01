@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -69,6 +69,10 @@
       {
         "from": "../database/reputation.example.json",
         "to": "engine/database/reputation.json"
+      },
+      {
+        "from": "../database/trusted-publishers.json",
+        "to": "engine/database/trusted-publishers.json"
       }
     ],
     "win": {

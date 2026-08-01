@@ -1,0 +1,38 @@
+import type { TrustIndicator } from "./TrustIndicator.js";
+import type { HashReputation } from "./HashReputationProvider.js";
+
+export type CertificateTrustStatus = "trusted" | "expired" | "revoked" | "invalid" | "unknown" | "missing";
+
+export interface VersionInformation {
+  readonly companyName?: string;
+  readonly productName?: string;
+  readonly originalFilename?: string;
+  readonly internalName?: string;
+  readonly fileVersion?: string;
+  readonly productVersion?: string;
+}
+
+export interface InstallationContext {
+  readonly id: string;
+  readonly weight: number;
+  readonly evidence: string;
+}
+
+export interface TrustEvaluationContext {
+  readonly filePath: string;
+  readonly hash: string;
+  readonly signature: {
+    readonly isSigned: boolean;
+    readonly publisher?: string;
+    readonly certificateStatus: CertificateTrustStatus;
+    readonly hasTrustedTimestamp?: boolean;
+  };
+  readonly version?: VersionInformation;
+  readonly installationContexts?: readonly InstallationContext[];
+  readonly hashReputation?: HashReputation;
+}
+
+export interface TrustEvaluator {
+  readonly id: string;
+  evaluate(context: TrustEvaluationContext): Promise<readonly TrustIndicator[]>;
+}

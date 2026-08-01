@@ -5,23 +5,28 @@ import { extractMetadata } from "../analyzer/metadataExtractor.js";
 import { detectPacker } from "../analyzer/packerDetector.js";
 import { analyzePe } from "../analyzer/peAnalyzer.js";
 import { analyzeSignature } from "../analyzer/signatureAnalyzer.js";
-import { RuleEngine, RuleLoader, VrlRuleParser } from "../../packages/core/src/rules/index.js";
+import { CertificateValidator, FileLocationEvaluator, HashReputationEvaluator, InstallationContextEvaluator, PublisherValidator, RuleEngine, RuleLoader, TrustAssessmentEngine, TrustRegistry, VersionValidator, VrlRuleParser, type TrustedPublisher } from "../../packages/core/src/rules/index.js";
 import { createRuleContext } from "./ruleContextFactory.js";
+import { createTrustContext } from "./trustContextFactory.js";
 import { LocalReputationDatabase } from "../reputation/localDatabase.js";
 import type { AnalysisResult, InvestigationDecision, RiskLevel } from "../types.js";
 
 export interface PipelineOptions {
   rulesDirectory: string;
   reputationDatabasePath: string;
+  trustedPublishers?: readonly TrustedPublisher[];
+  trustAssessmentEngine?: TrustAssessmentEngine;
 }
 
 export class AnalysisPipeline {
   private ruleEnginePromise: Promise<RuleEngine>;
   private reputationDatabase: LocalReputationDatabase;
+  private trustAssessmentEngine: TrustAssessmentEngine;
 
   constructor(options: PipelineOptions) {
     this.ruleEnginePromise = loadRuleEngine(options.rulesDirectory);
     this.reputationDatabase = new LocalReputationDatabase(options.reputationDatabasePath);
+    this.trustAssessmentEngine = options.trustAssessmentEngine ?? createTrustAssessmentEngine(options.trustedPublishers ?? []);
   }
 
   async analyze(filePath: string, source?: "download" | "filesystem" | "removable-media"): Promise<AnalysisResult> {
@@ -47,7 +52,8 @@ export class AnalysisPipeline {
       packer,
       peMetadata,
     };
-    const staticAnalysisReport = ruleEngine.evaluate(createRuleContext({ ...analysisContext, hashes }, reputation, source), { filePath: resolvedPath, fileType: peMetadata.isPe ? "Windows Portable Executable" : metadataResult.fileType });
+    const trust = await this.trustAssessmentEngine.assess(createTrustContext({ filePath: resolvedPath, hashes, signatureStatus: signature.status, signaturePublisher: signature.publisher }, reputation));
+    const staticAnalysisReport = ruleEngine.evaluate(createRuleContext({ ...analysisContext, hashes }, reputation, source), { filePath: resolvedPath, fileType: peMetadata.isPe ? "Windows Portable Executable" : metadataResult.fileType }, trust);
     const heuristicFindings = staticAnalysisReport.matchedRules.map((result) => ({ ruleId: result.id, score: result.score, evidence: result.evidence }));
     const riskLevel = toRiskLevel(staticAnalysisReport.riskScore);
     const decision = toDecision(staticAnalysisReport.recommendation);
@@ -67,6 +73,9 @@ export class AnalysisPipeline {
       heuristicScore: heuristicFindings.reduce((total, finding) => total + finding.score, 0),
       reputationScore: reputation.score,
       finalRiskScore: staticAnalysisReport.riskScore,
+      trustScore: staticAnalysisReport.trustScore,
+      overallScore: staticAnalysisReport.overallScore,
+      confidence: staticAnalysisReport.confidence,
       riskLevel,
       decision,
       recommendation: staticAnalysisReport.recommendation,
@@ -90,4 +99,15 @@ function toDecision(recommendation: string): InvestigationDecision { return reco
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function createTrustAssessmentEngine(trustedPublishers: readonly TrustedPublisher[]): TrustAssessmentEngine {
+  return new TrustAssessmentEngine(new TrustRegistry([
+    new CertificateValidator(),
+    new PublisherValidator(trustedPublishers),
+    new FileLocationEvaluator(),
+    new VersionValidator(),
+    new InstallationContextEvaluator(),
+    new HashReputationEvaluator(),
+  ]));
 }

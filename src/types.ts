@@ -92,6 +92,9 @@ export interface AnalysisResult {
   heuristicScore: number;
   reputationScore: number;
   finalRiskScore: number;
+  trustScore: number;
+  overallScore: number;
+  confidence: number;
   riskLevel: RiskLevel;
   decision: InvestigationDecision;
   recommendation: string;

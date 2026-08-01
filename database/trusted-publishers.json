@@ -1,0 +1,12 @@
+{
+  "publishers": [
+    { "id": "MICROSOFT", "displayName": "Microsoft", "subjectNames": ["Microsoft Corporation"] },
+    { "id": "GOOGLE", "displayName": "Google", "subjectNames": ["Google LLC", "Google Inc"] },
+    { "id": "ADOBE", "displayName": "Adobe", "subjectNames": ["Adobe Inc", "Adobe Systems"] },
+    { "id": "VALVE", "displayName": "Valve", "subjectNames": ["Valve Corp"] },
+    { "id": "NVIDIA", "displayName": "NVIDIA", "subjectNames": ["NVIDIA Corporation"] },
+    { "id": "INTEL", "displayName": "Intel", "subjectNames": ["Intel Corporation"] },
+    { "id": "RIOT_GAMES", "displayName": "Riot Games", "subjectNames": ["Riot Games"] },
+    { "id": "MOZILLA", "displayName": "Mozilla", "subjectNames": ["Mozilla Corporation"] }
+  ]
+}

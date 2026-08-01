@@ -1,5 +1,7 @@
 # Rule Engine Architecture
 
+> The current trust-first architecture is documented in [trust-assessment-architecture.md](trust-assessment-architecture.md). This document describes the original VRL design and migration rationale.
+
 ## Scope and Boundary
 
 The Local Security Engine is a static evidence and investigation-priority system. It extracts features, evaluates policy, aggregates risk, and recommends the next step. It does not classify a file as malware or name a malware family.

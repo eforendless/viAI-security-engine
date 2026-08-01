@@ -3,14 +3,17 @@ import { join } from "node:path";
 import { createLocalApi, type MonitoringStatus } from "./api/localApi.js";
 import { EventManager } from "./core/eventManager.js";
 import { AnalysisPipeline } from "./core/pipeline.js";
+import { loadTrustedPublishers } from "./core/trustedPublisherConfig.js";
 import { DownloadMonitor } from "./watcher/downloadMonitor.js";
 import { ExecutableMonitor } from "./watcher/executableMonitor.js";
 import { UsbMonitor } from "./watcher/usbMonitor.js";
 
 const root = process.cwd();
+const trustedPublishers = await loadTrustedPublishers(join(root, "database", "trusted-publishers.json"));
 const pipeline = new AnalysisPipeline({
   rulesDirectory: join(root, "rules"),
   reputationDatabasePath: join(root, "database", "reputation.json"),
+  trustedPublishers,
 });
 const eventManager = new EventManager(pipeline);
 const downloadMonitor = new DownloadMonitor(eventManager);

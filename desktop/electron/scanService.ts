@@ -1,6 +1,8 @@
 import type { BackgroundService, PersistedScanState, ScanStatus } from "./backgroundService";
 
 export type ScanEventName = "scanStarted" | "scanProgress" | "scanPaused" | "scanCompleted" | "scanCancelled" | "scanFailed";
+type ScanUpdate = Omit<PersistedScanState, "pendingFiles">;
+const progressCheckpointInterval = 16;
 
 export class ScanService {
   private processing = false;
@@ -9,7 +11,7 @@ export class ScanService {
   constructor(
     private readonly background: BackgroundService,
     private readonly analyze: (filePath: string, scanType: PersistedScanState["mode"]) => Promise<unknown>,
-    private readonly publish: (event: ScanEventName, scan: PersistedScanState) => void,
+    private readonly publish: (event: ScanEventName, scan: ScanUpdate) => void,
   ) {}
 
   async recover(): Promise<void> {
@@ -25,7 +27,7 @@ export class ScanService {
     scan.filesRemaining = scan.pendingFiles.length;
     scan.totalFiles = scan.pendingFiles.length;
     await this.background.saveScan(scan);
-    this.publish("scanStarted", scan);
+    this.publishUpdate("scanStarted", scan);
     void this.process(scan.id, concurrency);
     return scan;
   }
@@ -41,7 +43,7 @@ export class ScanService {
     scan.currentStage = "Analyzing";
     scan.updatedAt = new Date(now).toISOString();
     await this.background.saveScan(scan);
-    this.publish("scanStarted", scan);
+    this.publishUpdate("scanStarted", scan);
     void this.process(scan.id);
   }
   async cancel(): Promise<void> { await this.transition("cancelled", "scanCancelled"); }
@@ -54,7 +56,7 @@ export class ScanService {
     scan.pausedAt = status === "paused" ? new Date().toISOString() : undefined;
     scan.updatedAt = new Date().toISOString();
     await this.background.saveScan(scan);
-    this.publish(event, scan);
+    this.publishUpdate(event, scan);
   }
 
   private async process(scanId: string, requestedConcurrency?: number): Promise<void> {
@@ -72,7 +74,8 @@ export class ScanService {
         scan.estimatedRemainingMs = 0;
         scan.updatedAt = new Date().toISOString();
         await this.background.saveScan(scan);
-        this.publish("scanCompleted", scan);
+        await this.background.flushHistory();
+        this.publishUpdate("scanCompleted", scan);
       }
     } catch {
       const scan = this.background.currentScan();
@@ -81,7 +84,8 @@ export class ScanService {
         scan.currentStage = "Failed";
         scan.updatedAt = new Date().toISOString();
         await this.background.saveScan(scan);
-        this.publish("scanFailed", scan);
+        await this.background.flushHistory();
+        this.publishUpdate("scanFailed", scan);
       }
     } finally {
       this.processing = false;
@@ -98,8 +102,8 @@ export class ScanService {
       scan.currentFile = filePath;
       scan.currentStage = "Analyzing";
       scan.updatedAt = new Date().toISOString();
-      await this.background.saveScan(scan);
-      try { await this.analyze(filePath, scan.mode); } catch { /* Continue scanning and retain the failed candidate for recovery evidence. */ }
+      let analysis: unknown;
+      try { analysis = await this.analyze(filePath, scan.mode); } catch { /* Continue scanning and retain the failed candidate for recovery evidence. */ }
       this.inFlight.delete(filePath);
       const latest = this.background.currentScan();
       if (!latest || latest.id !== scanId || latest.status !== "running") return;
@@ -107,17 +111,30 @@ export class ScanService {
       latest.filesCompleted = latest.totalFiles - latest.pendingFiles.length;
       latest.filesRemaining = latest.pendingFiles.length;
       latest.progress = latest.totalFiles ? Math.round((latest.filesCompleted / latest.totalFiles) * 100) : 100;
+      if (needsInvestigation(analysis)) latest.investigationCount += 1;
       latest.currentFile = filePath;
       latest.updatedAt = new Date().toISOString();
       const elapsed = elapsedMs(latest, Date.now());
       latest.estimatedRemainingMs = latest.filesCompleted ? Math.round((elapsed / latest.filesCompleted) * latest.filesRemaining) : undefined;
-      await this.background.saveScan(latest);
-      this.publish("scanProgress", latest);
+      const checkpoint = latest.filesRemaining > 0 && latest.filesCompleted % progressCheckpointInterval === 0;
+      await this.background.saveScan(latest, { persist: checkpoint, publish: false });
+      this.publishUpdate("scanProgress", latest);
     }
+  }
+
+  private publishUpdate(event: ScanEventName, scan: PersistedScanState): void {
+    const { pendingFiles: _pendingFiles, ...update } = scan;
+    this.publish(event, update);
   }
 }
 
 function elapsedMs(scan: PersistedScanState, now: number): number {
   const paused = scan.pausedAt ? Math.max(0, now - Date.parse(scan.pausedAt)) : 0;
   return Math.max(0, now - Date.parse(scan.startedAt) - scan.pausedDurationMs - paused);
+}
+
+function needsInvestigation(analysis: unknown): boolean {
+  if (!analysis || typeof analysis !== "object") return false;
+  const result = analysis as { riskScore?: unknown; recommendation?: unknown };
+  return (typeof result.riskScore === "number" && result.riskScore > 25) || result.recommendation === "AI_ANALYSIS";
 }

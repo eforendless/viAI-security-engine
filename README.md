@@ -1,56 +1,69 @@
-# viAI Local Security Engine
+# viAI Security Engine
 
-viAI Local Security Engine is a privacy-first, static evidence collector for endpoint security workflows. Its only decision is whether available local evidence justifies deeper investigation. It does not execute files, upload files, classify malware, or present a user-facing threat explanation.
+**Local security visibility for Windows endpoints.**
 
-## Capabilities
+viAI Security Engine helps security-conscious teams review suspicious files and device activity without sending files or evidence outside the device. It combines a focused desktop workspace with local static analysis, configurable monitoring, and investigation-priority scoring.
 
-- Watches configured download locations and executable file changes.
-- Performs local SHA-256, SHA-1, MD5, metadata, entropy, Authenticode, PE import/section, and packer-indicator analysis.
-- Maintains a local JSON reputation cache at `database/reputation.json`.
-- Compiles editable VRL rules in `rules/` at startup and produces a 0-100 investigation-priority score plus `ALLOW`, `MONITOR`, `SANDBOX`, or `AI_ANALYSIS` routing.
-- Exposes `POST /analyze` on loopback only at `127.0.0.1:4117`.
+![viAI Security Engine dashboard](docs/dashboard.png)
 
-## Quick Start
+*The viAI dashboard presents protection status, local analysis activity, investigation priorities, and monitoring coverage in one place.*
 
-```powershell
-npm install
-npm test
-npm run build
-npm start
-```
+## Security Visibility, Kept Local
 
-Analyze a local path through the API:
+viAI is designed for situations where privacy and control matter. It analyzes local evidence to determine whether a file deserves closer investigation; it does not execute samples, upload files, or claim to provide a malware verdict.
 
-```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4117/analyze -ContentType application/json -Body '{"path":"C:\\Users\\example\\Downloads\\setup.exe"}'
-```
+- **Private by design**: File reads, hashes, metadata, reports, and reputation data remain on the device.
+- **Investigation-focused**: Results are prioritized as low, medium, or high based on collected evidence and configured rules.
+- **Built for Windows workflows**: Review files on demand, scan selected locations, monitor relevant activity, and retain local history for follow-up.
 
-## Decision Model
+## Desktop Experience
 
-| Score | Level | Decision |
+The desktop app brings the core security workflow into a single, focused workspace:
+
+- **Dashboard**: Live protection state, monitored-sensor coverage, analysis activity, risk distribution, and recent results.
+- **Quick Scan**: Inspect an individual file or folder when a user, alert, or investigation calls for it.
+- **Full System Scan**: Collect and review executable candidates from selected Windows locations with progress, estimates, and investigation counts.
+- **Realtime Protection**: Configure local monitoring for downloads, executable activity, USB storage, notifications, exclusions, and performance policy.
+- **Device Security**: Review connected devices, set trust, block devices, and inspect removable-media scan findings.
+- **History**: Keep local reports, trust evidence, rule matches, and recommendations available for review and export.
+
+![viAI full system scan workspace](docs/full-scan.png)
+
+*The full system scan keeps progress, current status, and investigation priority visible while analysis continues locally.*
+
+## What viAI Monitors
+
+viAI can monitor three primary local signals when enabled:
+
+| Sensor | What it observes |
+| --- | --- |
+| Downloads | New files from configured download locations that require local review. |
+| Executable activity | Supported executable and script changes in configured directories. |
+| Removable storage | USB storage and removable-media activity managed through the desktop device-security experience. |
+
+Monitoring policy is configurable from the desktop app. Settings, exclusions, and recorded activity stay on the local device.
+
+## Evidence-Based Prioritization
+
+Each analysis brings together available static evidence, including file hashes, metadata, entropy, Authenticode information, PE imports and sections, packer indicators, local reputation, and editable VRL rules. viAI turns that evidence into an investigation priority, not a malware probability.
+
+| Score | Priority | Recommended response |
 | --- | --- | --- |
-| 0-25 | Low | No further investigation |
-| 26-60 | Medium | Investigate |
-| 61-100 | High | Priority investigation |
+| 0-25 | Low | Retain local evidence; no immediate follow-up is indicated. |
+| 26-60 | Medium | Review the evidence and consider an investigation workflow. |
+| 61-100 | High | Prioritize the item for deeper investigation, sandboxing, or approved analyst review. |
 
-The score measures investigation justification, not a malware probability. `high` results can be handed to a sandbox through the `SandboxClient` contract; the AI investigation contract is intentionally separate.
+## Privacy and Operating Model
 
-See [docs/architecture.md](docs/architecture.md), [docs/example-analysis-report.json](docs/example-analysis-report.json), and [docs/development-roadmap.md](docs/development-roadmap.md).
+- The local service binds only to `127.0.0.1`.
+- viAI does not upload files, execute samples, or perform cloud-dependent classification.
+- Local reports can be reviewed and exported from the desktop history experience.
+- Decisions are recommendations for further investigation; viAI does not delete, quarantine, or alter files.
 
-## Desktop Application
+## Availability
 
-The Electron desktop experience is in [desktop](desktop). It uses the existing local `/analyze` API through a secure Electron IPC bridge; it does not reimplement engine analysis.
+viAI Security Engine is delivered as a Windows desktop application. Use the installer supplied with your approved viAI distribution for deployment and updates.
 
-```powershell
-npm start
-```
+## Technical Reference
 
-In a second terminal:
-
-```powershell
-Set-Location desktop
-npm install
-npm run desktop
-```
-
-The Vite renderer is available at `http://localhost:5173` during development and opens inside Electron automatically. Production validation uses `npm run build` from the `desktop` directory.
+For architecture and rule-engine details, see [Architecture](docs/architecture.md), [Rule Engine Architecture](docs/rule-engine-architecture.md), and [Trust Assessment Architecture](docs/trust-assessment-architecture.md).

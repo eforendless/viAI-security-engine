@@ -147,8 +147,8 @@ function AppRoutes() {
     let active = true;
     const syncBackground = (value: unknown) => {
       if (!active || !value || typeof value !== "object") return;
-      const snapshot = value as { settings?: Record<string, unknown>; activeScan?: Record<string, unknown> };
-      useSecurityStore.getState().hydrateBackground(snapshot.settings ?? {}, snapshot.activeScan);
+      const snapshot = value as { settings?: Record<string, unknown>; activeScan?: Record<string, unknown>; history?: unknown[]; activeMonitors?: unknown[] };
+      useSecurityStore.getState().hydrateBackground(snapshot.settings ?? {}, snapshot.activeScan, snapshot.history, snapshot.activeMonitors);
     };
     void window.viai?.background.snapshot().then(syncBackground);
     return window.viai?.background.onChanged(syncBackground);
@@ -169,7 +169,7 @@ function AppRoutes() {
         const [analyses, monitoring] = await Promise.all([getEngineEvents(), getMonitoringStatus()]);
         if (cancelled) return;
         analyses.forEach(store.addHistory);
-        store.setMonitoringStatus(monitoring);
+        if (!window.viai) store.setMonitoringStatus(monitoring);
       } catch {
         store.setEngineOnline(false);
       }

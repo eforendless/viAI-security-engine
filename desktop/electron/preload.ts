@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("viai", {
+  application: {
+    version: () => ipcRenderer.invoke("application:version") as Promise<string>,
+  },
   background: {
     snapshot: () => ipcRenderer.invoke("background:snapshot") as Promise<unknown>,
     update: (changes: Record<string, unknown>) => ipcRenderer.invoke("background:update", changes) as Promise<unknown>,

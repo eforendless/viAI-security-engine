@@ -3,6 +3,9 @@ export {};
 declare global {
   interface Window {
     viai?: {
+      application: {
+        version(): Promise<string>;
+      };
       background: {
         snapshot(): Promise<unknown>;
         update(changes: Record<string, unknown>): Promise<unknown>;

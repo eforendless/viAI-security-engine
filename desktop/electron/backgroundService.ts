@@ -55,6 +55,7 @@ export interface BackgroundSnapshot {
 }
 
 interface StoredBackgroundState { settings?: unknown; history?: unknown; activeScan?: unknown; }
+export interface SaveScanOptions { persist?: boolean; publish?: boolean; }
 
 export const recommendedSettings: BackgroundSettings = Object.freeze({
   backgroundProtection: true, runAfterWindowCloses: true, launchOnStartup: true, startMinimized: false, startSilently: false, openDashboardAfterStartup: true, minimizeToTray: true, windowsNotifications: true, soundNotifications: false, desktopDarkMode: false,
@@ -80,6 +81,8 @@ export class BackgroundService {
   private activeScan?: PersistedScanState;
   private mutation: Promise<void> = Promise.resolve();
   private readonly historyPath: string;
+  private historyDirty = false;
+  private historyFlushTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void) { this.historyPath = join(dirname(dataPath), "background-history.json"); }
 
@@ -101,9 +104,9 @@ export class BackgroundService {
   async importSettings(serialized: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); await this.persist(); return this.publish(); }); }
   async clearHistory(): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = []; await this.persistHistory(); this.publish(); }); }
   async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
-  async saveScan(scan: PersistedScanState | undefined): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; await this.persist(); return this.publish(); }); }
+  async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
 
-  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number): Promise<void> {
+  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false): Promise<void> {
     const analysis = analysisRecord(body);
     if (!analysis) return;
     await this.enqueue(async () => {
@@ -112,8 +115,27 @@ export class BackgroundService {
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
       this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: "0.1.6", detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
-      await this.persistHistory();
-      this.publish();
+      if (deferPersistence) {
+        this.historyDirty = true;
+        this.scheduleHistoryFlush();
+      } else {
+        await this.persistHistory();
+        this.publish();
+      }
+    });
+  }
+
+  async flushHistory(publish = true): Promise<void> {
+    if (this.historyFlushTimer) {
+      clearTimeout(this.historyFlushTimer);
+      this.historyFlushTimer = undefined;
+    }
+    await this.enqueue(async () => {
+      if (this.historyDirty) {
+        await this.persistHistory();
+        this.historyDirty = false;
+      }
+      if (publish) this.publish();
     });
   }
 
@@ -165,6 +187,13 @@ export class BackgroundService {
 
   private publish(): BackgroundSnapshot { const snapshot = this.snapshot(); this.onChanged(snapshot); return snapshot; }
   private async enqueue<T>(operation: () => Promise<T>): Promise<T> { const result = this.mutation.then(operation, operation); this.mutation = result.then(() => undefined, () => undefined); return result; }
+  private scheduleHistoryFlush(): void {
+    if (this.historyFlushTimer) return;
+    this.historyFlushTimer = setTimeout(() => {
+      this.historyFlushTimer = undefined;
+      void this.flushHistory(false);
+    }, 500);
+  }
   private async ensureHistoryLoaded(): Promise<void> {
     if (this.historyLoaded) return;
     if (existsSync(this.historyPath)) {

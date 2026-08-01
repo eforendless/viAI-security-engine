@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
 import { DeviceSecurityService, type DeviceSecuritySnapshot } from "./deviceSecurity";
-import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate } from "./backgroundService";
+import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate, type PersistedScanState } from "./backgroundService";
 import { ScanService, type ScanEventName } from "./scanService";
 import { StartupManager, type StartupProgress } from "./startup";
 
@@ -43,7 +43,7 @@ function publishBackground(snapshot: BackgroundSnapshot): void {
   applyStartup(snapshot.settings);
 }
 
-function publishScan(event: ScanEventName, scan: unknown): void {
+function publishScan(event: ScanEventName, scan: Omit<PersistedScanState, "pendingFiles">): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("scan:event", { event, scan });
 }
 
@@ -106,7 +106,7 @@ function createWindow(show = true): BrowserWindow {
     height: 920,
     minWidth: 1120,
     minHeight: 720,
-    title: "viAI Desktop",
+    title: "viAI security",
     show: false,
     backgroundColor: "#101820",
     frame: false,
@@ -256,6 +256,7 @@ app.on("will-quit", disposeMainResources);
 ipcMain.handle("startup:retry", () => runStartup());
 ipcMain.handle("startup:exit", () => { quitting = true; app.quit(); });
 ipcMain.handle("startup:complete-transition", () => completeStartupTransition());
+ipcMain.handle("application:version", () => app.getVersion());
 
 ipcMain.handle("dialog:pick-file", async () => {
   const result = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "All files", extensions: ["*"] }] });
@@ -373,7 +374,7 @@ async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | 
     throw new Error(`Engine returned an invalid response (${response.status}): ${detail}`);
   }
   if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
-  await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt);
+  await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder");
   notifyAnalysis(body);
   return body;
 }

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AnalysisResult, FileActivityEvent } from "../types.js";
+import type { AnalysisResult, FileActivityEvent, MonitorObservation } from "../types.js";
 import type { AnalysisPipeline } from "./pipeline.js";
 
 export class EventManager extends EventEmitter {
@@ -10,6 +10,10 @@ export class EventManager extends EventEmitter {
 
   publish(event: FileActivityEvent): void {
     this.emit("file-activity", event);
+  }
+
+  observe(observation: MonitorObservation): void {
+    this.emit("monitor-observation", observation);
   }
 
   private async process(event: FileActivityEvent): Promise<void> {

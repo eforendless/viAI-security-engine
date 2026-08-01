@@ -1,0 +1,1 @@
+export interface NotificationManager { notify(title: string, body: string): void; }

@@ -1,0 +1,1 @@
+export interface StartupManager { setEnabled(enabled: boolean, options: { startMinimized: boolean; startSilently: boolean }): Promise<void>; }

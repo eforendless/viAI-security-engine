@@ -121,7 +121,7 @@ export function LegacyApp() {
 
 import { lazy, Suspense, useEffect } from "react";
 import { AnimatePresence } from "framer-motion";
-import { HashRouter, Route, Routes, useLocation } from "react-router-dom";
+import { HashRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { getEngineEvents, getMonitoringStatus, probeEngine } from "./api/engineClient";
 import { AppShell } from "./layout/AppShell";
@@ -136,9 +136,11 @@ const History = lazy(() => import("./pages/History"));
 const FileDetails = lazy(() => import("./pages/FileDetails"));
 const Settings = lazy(() => import("./pages/Settings"));
 const About = lazy(() => import("./pages/About"));
+const DeviceSecurity = lazy(() => import("./pages/DeviceSecurity"));
 
 function AppRoutes() {
   const location = useLocation();
+  const navigate = useNavigate();
   const darkMode = useSecurityStore((state) => state.darkMode);
   useEffect(() => { document.documentElement.dataset.theme = darkMode ? "dark" : "light"; }, [darkMode]);
   useEffect(() => {
@@ -162,7 +164,10 @@ function AppRoutes() {
     const timer = window.setInterval(() => void syncEngine(), 3_000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
-  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><Skeleton className="loading-block" /></div>}><Routes location={location} key={location.pathname}><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /></Route></Routes></Suspense></AnimatePresence>;
+  useEffect(() => window.viai?.background.onCommand((command) => {
+    navigate(command === "quick-scan" ? "/quick-scan" : command === "realtime" ? "/realtime" : command === "history" ? "/history" : "/settings");
+  }), [navigate]);
+  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><Skeleton className="loading-block" /></div>}><Routes location={location} key={location.pathname}><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /></Route></Routes></Suspense></AnimatePresence>;
 }
 
 function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif" } }} /></HashRouter>; }

@@ -1,0 +1,12 @@
+export type { BackgroundSettings, HighRiskAction, MediumRiskAction, PerformanceMode, ScanPriority } from "./SettingsSchema.js";
+export { factorySettings, recommendedSettings } from "./SettingsSchema.js";
+export type { SettingsRepository } from "./SettingsRepository.js";
+export { SettingsService } from "./SettingsService.js";
+export { validateSettings } from "./SettingsValidator.js";
+export type { RealtimeMonitor } from "./RealtimeMonitor.js";
+export { BackgroundEngine } from "./BackgroundEngine.js";
+export { BackgroundManager } from "./BackgroundManager.js";
+export type { NotificationManager } from "./NotificationManager.js";
+export type { StartupManager } from "./StartupManager.js";
+export type { BackgroundHistoryRecord, PersistenceManager } from "./PersistenceManager.js";
+export type { BackgroundWorker } from "./BackgroundWorker.js";

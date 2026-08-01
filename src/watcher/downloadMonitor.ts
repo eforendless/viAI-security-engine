@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EventManager } from "../core/eventManager.js";
-import { ExecutableMonitor } from "./executableMonitor.js";
+import { ExecutableMonitor, type FileMonitorPolicy } from "./executableMonitor.js";
 
 export class DownloadMonitor {
   private readonly monitor: ExecutableMonitor;
@@ -10,8 +10,8 @@ export class DownloadMonitor {
     this.monitor = new ExecutableMonitor(eventManager, "download");
   }
 
-  start(): void {
-    this.monitor.watchDirectories(this.downloadDirectories);
+  start(policy: FileMonitorPolicy): void {
+    this.monitor.watchDirectories(this.downloadDirectories, policy);
   }
 
   stop(): void {

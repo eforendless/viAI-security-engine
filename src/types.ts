@@ -115,3 +115,10 @@ export interface SandboxClient {
 export interface InvestigationClient {
   investigate(analysis: AnalysisResult): Promise<void>;
 }
+
+export interface MonitorObservation {
+  id: string;
+  timestamp: string;
+  category: "process" | "scheduled-task" | "registry-run-key" | "service" | "driver";
+  detail: string;
+}

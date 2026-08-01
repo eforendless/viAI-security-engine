@@ -13,3 +13,5 @@ export { DecisionEngine } from "./DecisionEngine.js";
 export type { DecisionInput, DecisionPolicy } from "./DecisionEngine.js";
 export { VrlRuleParser } from "./vrl/VrlRuleParser.js";
 export * from "../trust/index.js";
+export * from "../device-security/index.js";
+export * from "../background/index.js";

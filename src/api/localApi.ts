@@ -1,15 +1,38 @@
 import { createServer, type Server } from "node:http";
 import type { AnalysisPipeline } from "../core/pipeline.js";
-import type { AnalysisResult } from "../types.js";
+import type { AnalysisResult, MonitorObservation } from "../types.js";
 
 export interface MonitoringStatus {
   downloadMonitoring: boolean;
   executableMonitoring: boolean;
   usbMonitoring: boolean;
+  executableDirectories: string[];
+  executableExtensions: string[];
+  excludedFolders: string[];
+  excludedFiles: string[];
+  excludedExtensions: string[];
+  scanUnknownFileTypes: boolean;
+  reportCreated: boolean;
+  reportModified: boolean;
+  processMonitoring: boolean;
+  monitorNewProcesses: boolean;
+  monitorChildProcesses: boolean;
+  monitorSuspiciousCommandLines: boolean;
+  monitorPowerShell: boolean;
+  monitorCmd: boolean;
+  monitorWScript: boolean;
+  monitorMshta: boolean;
+  excludedProcesses: string[];
+  windowsMonitoring: boolean;
+  monitorScheduledTasks: boolean;
+  monitorRegistryRunKeys: boolean;
+  monitorServices: boolean;
+  monitorDrivers: boolean;
 }
 
 export interface LocalApiOptions {
   getRecentAnalyses?: () => AnalysisResult[];
+  getRecentObservations?: () => MonitorObservation[];
   getMonitoringStatus?: () => MonitoringStatus;
   setMonitoringStatus?: (updates: Partial<MonitoringStatus>) => MonitoringStatus;
 }
@@ -21,7 +44,7 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
       return;
     }
     if (request.method === "GET" && request.url === "/events") {
-      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ analyses: options.getRecentAnalyses?.() ?? [] }));
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ analyses: options.getRecentAnalyses?.() ?? [], observations: options.getRecentObservations?.() ?? [] }));
       return;
     }
     if (request.method === "GET" && request.url === "/monitoring") {
@@ -31,7 +54,7 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
     if (request.method === "PUT" && request.url === "/monitoring") {
       try {
         const body = await readJsonBody(request);
-        const updates = Object.fromEntries(Object.entries(body).filter(([key, value]) => ["downloadMonitoring", "executableMonitoring", "usbMonitoring"].includes(key) && typeof value === "boolean")) as Partial<MonitoringStatus>;
+        const updates = monitoringUpdates(body);
         response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(options.setMonitoringStatus?.(updates) ?? options.getMonitoringStatus?.() ?? {}));
       } catch (error) {
         response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : "monitoring update failed" }));
@@ -45,7 +68,8 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
     try {
       const body = await readJsonBody(request);
       if (typeof body.path !== "string" || body.path.length === 0) throw new Error("'path' must be a non-empty string");
-      const analysis = await pipeline.analyze(body.path);
+      const source = body.source === "download" || body.source === "filesystem" || body.source === "removable-media" ? body.source : undefined;
+      const analysis = await pipeline.analyze(body.path, source);
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
         riskScore: analysis.finalRiskScore,
         trustScore: analysis.trustScore,
@@ -71,4 +95,16 @@ async function readJsonBody(request: import("node:http").IncomingMessage): Promi
     if (content.length > 8_192) throw new Error("request body exceeds 8 KiB");
   }
   return JSON.parse(content) as Record<string, unknown>;
+}
+
+function monitoringUpdates(body: Record<string, unknown>): Partial<MonitoringStatus> {
+  const booleans = ["downloadMonitoring", "executableMonitoring", "usbMonitoring", "scanUnknownFileTypes", "reportCreated", "reportModified", "processMonitoring", "monitorNewProcesses", "monitorChildProcesses", "monitorSuspiciousCommandLines", "monitorPowerShell", "monitorCmd", "monitorWScript", "monitorMshta", "windowsMonitoring", "monitorScheduledTasks", "monitorRegistryRunKeys", "monitorServices", "monitorDrivers"];
+  const lists = ["executableDirectories", "executableExtensions", "excludedFolders", "excludedFiles", "excludedExtensions", "excludedProcesses"];
+  const updates: Partial<MonitoringStatus> = {};
+  for (const key of booleans) if (typeof body[key] === "boolean") (updates as Record<string, unknown>)[key] = body[key];
+  for (const key of lists) {
+    const value = body[key];
+    if (Array.isArray(value) && value.length <= 64 && value.every((entry) => typeof entry === "string" && entry.length > 0 && entry.length <= 512)) (updates as Record<string, unknown>)[key] = value;
+  }
+  return updates;
 }

@@ -3,6 +3,29 @@ export {};
 declare global {
   interface Window {
     viai?: {
+      background: {
+        snapshot(): Promise<unknown>;
+        update(changes: Record<string, unknown>): Promise<unknown>;
+        restoreRecommended(): Promise<unknown>;
+        restoreFactory(): Promise<unknown>;
+        exportSettings(): Promise<string | undefined>;
+        importSettings(serialized: string): Promise<unknown>;
+        clearHistory(): Promise<void>;
+        onChanged(listener: (snapshot: unknown) => void): () => void;
+        onCommand(listener: (command: "quick-scan" | "realtime" | "history" | "settings") => void): () => void;
+      };
+      deviceSecurity: {
+        snapshot(): Promise<unknown>;
+        setTrust(deviceId: string, trusted: boolean): Promise<void>;
+        block(deviceId: string): Promise<void>;
+        scan(deviceId: string): Promise<void>;
+        onChanged(listener: (update: unknown) => void): () => void;
+      };
+      windowControls: {
+        minimize(): Promise<void>;
+        maximize(): Promise<void>;
+        close(): Promise<void>;
+      };
       chooseFile(): Promise<string | undefined>;
       chooseFolder(): Promise<string | undefined>;
       openPath(filePath: string): Promise<string>;
@@ -12,7 +35,7 @@ declare global {
       probeEngine(): Promise<boolean>;
       engineEvents(): Promise<unknown[]>;
       monitoringStatus(): Promise<unknown>;
-      setMonitoring(updates: Record<string, boolean>): Promise<unknown>;
+      setMonitoring(updates: Record<string, boolean | string[]>): Promise<unknown>;
     };
   }
 }

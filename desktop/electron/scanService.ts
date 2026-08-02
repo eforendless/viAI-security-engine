@@ -6,6 +6,7 @@ const progressCheckpointInterval = 16;
 
 export class ScanService {
   private processing = false;
+  private requestedConcurrency = 2;
   private readonly inFlight = new Set<string>();
 
   constructor(
@@ -22,6 +23,7 @@ export class ScanService {
   async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number): Promise<PersistedScanState> {
     const existing = this.background.currentScan();
     if (existing?.status === "running" || existing?.status === "paused") throw new Error("A scan is already running");
+    this.requestedConcurrency = concurrency;
     const now = new Date().toISOString();
     const scan: PersistedScanState = { id: crypto.randomUUID(), mode, target, startedAt: now, updatedAt: now, currentFile: "Preparing local analysis...", filesCompleted: 0, filesRemaining: files.length, totalFiles: files.length, progress: 0, currentStage: "Preparing", status: "running", investigationCount: 0, pausedDurationMs: 0, pendingFiles: [...new Set(files)] };
     scan.filesRemaining = scan.pendingFiles.length;
@@ -63,7 +65,7 @@ export class ScanService {
     if (this.processing) return;
     this.processing = true;
     try {
-      const concurrency = Math.max(1, Math.min(requestedConcurrency ?? 2, 8));
+      const concurrency = Math.max(1, Math.min(requestedConcurrency ?? this.requestedConcurrency, 8));
       await Promise.all(Array.from({ length: concurrency }, () => this.processNext(scanId)));
       const scan = this.background.currentScan();
       if (scan?.id === scanId && scan.status === "running" && scan.pendingFiles.length === 0) {
@@ -89,6 +91,8 @@ export class ScanService {
       }
     } finally {
       this.processing = false;
+      const replacement = this.background.currentScan();
+      if (replacement?.id !== scanId && replacement?.status === "running") void this.process(replacement.id);
     }
   }
 

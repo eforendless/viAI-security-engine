@@ -37,3 +37,24 @@ test("large scans checkpoint progress without persisting every file", async () =
   assert.equal(repository.scan?.investigationCount, files.length);
   assert.ok(repository.saves <= 6, `expected bounded checkpoint writes, received ${repository.saves}`);
 });
+
+test("a replacement scan starts after a cancelled worker releases the processing lock", async () => {
+  const repository = new MemoryScanRepository();
+  let releaseFirstAnalysis: (() => void) | undefined;
+  const firstAnalysis = new Promise<void>((resolve) => { releaseFirstAnalysis = resolve; });
+  let completeReplacement: (() => void) | undefined;
+  const replacementComplete = new Promise<void>((resolve) => { completeReplacement = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async (filePath) => {
+    if (filePath === "C:\\samples\\first.exe") await firstAnalysis;
+  }, (event) => { if (event === "scanCompleted") completeReplacement?.(); });
+
+  await service.start("full", "Windows system locations", ["C:\\samples\\first.exe"], 1);
+  await service.cancel();
+  await service.start("full", "Windows system locations", ["C:\\samples\\replacement.exe"], 1);
+  releaseFirstAnalysis?.();
+  await replacementComplete;
+
+  assert.equal(repository.scan?.status, "completed");
+  assert.equal(repository.scan?.currentFile, "Local analysis complete");
+  assert.equal(repository.scan?.filesCompleted, 1);
+});

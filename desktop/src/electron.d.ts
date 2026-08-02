@@ -38,7 +38,7 @@ declare global {
       };
       chooseFile(): Promise<string | undefined>;
       chooseFolder(): Promise<string | undefined>;
-      openPath(filePath: string): Promise<string>;
+      openPath(filePath?: string): Promise<string>;
       scans: {
         start(mode: "quick" | "full" | "folder", target?: string): Promise<unknown>;
         pause(): Promise<void>;

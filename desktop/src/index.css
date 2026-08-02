@@ -2,6 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
+.dropdown-menu { position: relative; }.dropdown-menu-list { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: grid; min-width: 156px; padding: 5px; border: 1px solid #d6e0f0; border-radius: 7px; background: #fff; box-shadow: 0 12px 28px #27456c24; }.dropdown-menu-list button { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 33px; border: 0; border-radius: 5px; padding: 0 9px; background: transparent; color: #405675; font-size: 12px; font-weight: 600; text-align: left; }.dropdown-menu-list button:hover, .dropdown-menu-list button[aria-checked="true"] { background: #edf5ff; color: #285d97; }:root[data-theme="dark"] .dropdown-menu-list { background: #16263b; border-color: #38516f; box-shadow: 0 12px 28px #00000038; }:root[data-theme="dark"] .dropdown-menu-list button { color: #c9d9ed; }:root[data-theme="dark"] .dropdown-menu-list button:hover, :root[data-theme="dark"] .dropdown-menu-list button[aria-checked="true"] { background: #203c5b; color: #f1f7ff; }
+
 :root { font-family: "Segoe UI Variable", "Aptos", sans-serif; color: #1b2940; background: #f5f8ff; font-synthesis: none; text-rendering: optimizeLegibility; }
 html, body, #root { height: 100%; overflow: hidden; }
 * { box-sizing: border-box; } body { margin: 0; min-width: 320px; background: radial-gradient(circle at 85% -10%, #d8edff 0, transparent 30%), #f5f8ff; } button, input, select { font: inherit; } button { cursor: pointer; } button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #54bae8; outline-offset: 2px; }

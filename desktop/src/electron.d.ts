@@ -6,6 +6,13 @@ declare global {
       application: {
         version(): Promise<string>;
       };
+      updates: {
+        snapshot(): Promise<unknown>;
+        check(): Promise<unknown>;
+        download(): Promise<unknown>;
+        install(): Promise<void>;
+        onChanged(listener: (update: unknown) => void): () => void;
+      };
       background: {
         snapshot(): Promise<unknown>;
         update(changes: Record<string, unknown>): Promise<unknown>;

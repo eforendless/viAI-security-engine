@@ -62,7 +62,7 @@ Each analysis brings together available static evidence, including file hashes, 
 
 ## Availability
 
-viAI Security Engine is delivered as a Windows desktop application. Use the installer supplied with your approved viAI distribution for deployment and updates.
+viAI Security Engine is delivered as a Windows desktop application. Installed releases can check GitHub for a newer release, download it, and restart into the update from the About page. Release maintainers publish update metadata and the NSIS installer with `npm --prefix desktop run publish:github` and a `GH_TOKEN` that can create GitHub releases.
 
 ## Technical Reference
 

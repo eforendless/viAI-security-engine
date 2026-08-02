@@ -1,4 +1,4 @@
-export type PerformanceMode = "low" | "balanced" | "high";
+export type PerformanceMode = "light" | "balanced" | "deep";
 export type ScanPriority = "low" | "normal" | "high";
 export type MediumRiskAction = "ignore" | "notify" | "sandbox" | "ai";
 export type HighRiskAction = "notify" | "sandbox" | "ai";

@@ -4,6 +4,13 @@ contextBridge.exposeInMainWorld("viai", {
   application: {
     version: () => ipcRenderer.invoke("application:version") as Promise<string>,
   },
+  updates: {
+    snapshot: () => ipcRenderer.invoke("updates:snapshot") as Promise<unknown>,
+    check: () => ipcRenderer.invoke("updates:check") as Promise<unknown>,
+    download: () => ipcRenderer.invoke("updates:download") as Promise<unknown>,
+    install: () => ipcRenderer.invoke("updates:install") as Promise<void>,
+    onChanged: (listener: (update: unknown) => void) => { const handler = (_event: Electron.IpcRendererEvent, update: unknown) => listener(update); ipcRenderer.on("updates:changed", handler); return () => ipcRenderer.removeListener("updates:changed", handler); },
+  },
   background: {
     snapshot: () => ipcRenderer.invoke("background:snapshot") as Promise<unknown>,
     update: (changes: Record<string, unknown>) => ipcRenderer.invoke("background:update", changes) as Promise<unknown>,

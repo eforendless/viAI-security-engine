@@ -9,6 +9,7 @@ import { DeviceSecurityService, type DeviceSecuritySnapshot } from "./deviceSecu
 import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate, type PersistedScanState } from "./backgroundService";
 import { ScanService, type ScanEventName } from "./scanService";
 import { StartupManager, type StartupProgress } from "./startup";
+import { UpdateService } from "./updater";
 
 const execFileAsync = promisify(execFile);
 const isPrimaryInstance = app.requestSingleInstanceLock();
@@ -28,6 +29,7 @@ let startupComplete = false;
 let startupRunning = false;
 let restoreAfterStartup = false;
 let startupSnapshot: BackgroundSnapshot | undefined;
+let updateService: UpdateService | undefined;
 const launchedInBackground = process.argv.includes("--viai-background");
 
 if (!isPrimaryInstance) app.quit();
@@ -240,6 +242,8 @@ app.on("second-instance", () => { if (app.isReady()) showMainWindow(); });
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  updateService = new UpdateService();
+  updateService.initialize();
   if (!launchedInBackground) await createSplashWindow();
   await runStartup();
   app.on("activate", () => showMainWindow());
@@ -257,6 +261,10 @@ ipcMain.handle("startup:retry", () => runStartup());
 ipcMain.handle("startup:exit", () => { quitting = true; app.quit(); });
 ipcMain.handle("startup:complete-transition", () => completeStartupTransition());
 ipcMain.handle("application:version", () => app.getVersion());
+ipcMain.handle("updates:snapshot", () => updateService?.current());
+ipcMain.handle("updates:check", () => updateService?.check());
+ipcMain.handle("updates:download", () => updateService?.download());
+ipcMain.handle("updates:install", () => updateService?.install());
 
 ipcMain.handle("dialog:pick-file", async () => {
   const result = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "All files", extensions: ["*"] }] });
@@ -299,6 +307,7 @@ ipcMain.handle("background:clear-history", () => backgroundService?.clearHistory
 
 ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", target?: string) => {
   if (!scanService || !backgroundService || !["quick", "full", "folder"].includes(mode)) throw new Error("Scan service is not ready");
+  const settings = backgroundService.snapshot().settings;
   let files: string[];
   if (mode === "quick") {
     if (typeof target !== "string" || !existsSync(target)) throw new Error("Choose an existing file to scan");
@@ -308,13 +317,13 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     files = await collectCandidates([target], 1_000);
   } else {
     const home = homedir();
-    const roots = ["C:\\", "C:\\Windows\\Temp", join(home, "Downloads"), join(home, "Desktop"), join(home, "Documents"), join(home, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup"), "C:\\ProgramData", "C:\\Program Files", "C:\\Program Files (x86)", ...await removableDrives()];
-    files = await collectCandidates(roots.filter(existsSync), 2_500);
-    target = "Windows system locations";
+    const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
+    const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives());
+    files = await collectCandidates(roots.filter(existsSync), Infinity, performanceMode === "deep");
+    target = performanceMode === "deep" ? "All accessible PC files" : performanceMode === "light" ? "Important Windows locations" : "Common Windows locations";
   }
-  const settings = backgroundService.snapshot().settings;
   const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
-  const parallel = configuredParallel || (settings.performanceMode === "low" ? 1 : settings.performanceMode === "high" ? 8 : 4);
+  const parallel = configuredParallel || (settings.performanceMode === "light" ? 1 : settings.performanceMode === "deep" ? 8 : 4);
   return scanService.start(mode, target ?? "", files, parallel);
 });
 ipcMain.handle("scan:pause", () => scanService?.pause());
@@ -355,28 +364,35 @@ ipcMain.handle("scan:system-roots", async () => {
 
 const engineUrl = "http://127.0.0.1:4117/analyze";
 const engineHealthUrl = "http://127.0.0.1:4117/health";
+const engineAnalysisTimeoutMs = 120_000;
 
 ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
 
 async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file"): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
-  const response = await fetch(engineUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: filePath }),
-  });
-  const responseText = await response.text();
-  let body: Record<string, unknown>;
   try {
-    body = JSON.parse(responseText) as Record<string, unknown>;
-  } catch {
-    const detail = responseText.trim() || "empty response body";
-    throw new Error(`Engine returned an invalid response (${response.status}): ${detail}`);
+    const response = await fetch(engineUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: filePath }),
+      signal: AbortSignal.timeout(engineAnalysisTimeoutMs),
+    });
+    const responseText = await response.text();
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(responseText) as Record<string, unknown>;
+    } catch {
+      const detail = responseText.trim() || "empty response body";
+      throw new Error(`Engine returned an invalid response (${response.status}): ${detail}`);
+    }
+    if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
+    await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder");
+    notifyAnalysis(body);
+    return body;
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw new Error("Local analysis timed out after 2 minutes; the file was skipped.");
+    throw error;
   }
-  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
-  await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder");
-  notifyAnalysis(body);
-  return body;
 }
 
 ipcMain.handle("engine:probe", async () => {
@@ -424,10 +440,29 @@ async function removableDrives(): Promise<string[]> {
   }
 }
 
-function collectCandidates(roots: string[], maxFiles: number): Promise<string[]> {
+async function fixedDrives(): Promise<string[]> {
+  if (process.platform !== "win32") return ["C:\\"];
+  try {
+    const script = "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object -ExpandProperty DeviceID | ConvertTo-Json -Compress";
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 10_000 });
+    const drives = JSON.parse(stdout) as string | string[] | null;
+    return (Array.isArray(drives) ? drives : drives ? [drives] : []).map((drive) => `${drive}\\`);
+  } catch {
+    return ["C:\\"];
+  }
+}
+
+function fullScanRoots(mode: "light" | "balanced" | "deep", home: string, fixed: string[], removable: string[]): string[] {
+  const important = [join(home, "Downloads"), join(home, "Desktop"), join(home, "Documents"), join(home, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup"), "C:\\ProgramData"];
+  if (mode === "light") return [...new Set(important)];
+  if (mode === "deep") return [...new Set([...fixed, ...removable])];
+  return [...new Set(["C:\\Windows\\Temp", ...important, join(home, "AppData"), "C:\\Program Files", "C:\\Program Files (x86)", ...removable])];
+}
+
+function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = false): Promise<string[]> {
   return new Promise((resolve) => {
     const files: string[] = [];
-    const workers = roots.map((root) => new Worker(join(__dirname, "scanWorker.js"), { workerData: { root } }));
+    const workers = roots.map((root) => new Worker(join(__dirname, "scanWorker.js"), { workerData: { root, includeAllFiles } }));
     let completed = 0;
     let finished = false;
     const finish = () => {

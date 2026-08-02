@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -12,11 +12,13 @@
     "desktop": "concurrently --kill-others-on-fail \"npm:dev:engine\" \"npm:dev:renderer\" \"npm:dev:electron\"",
     "build": "npm --prefix .. run build && tsc -b && vite build && tsc -p tsconfig.electron.json && node -e \"const fs=require('fs'); const pkg=require('./package.json'); fs.writeFileSync('dist-electron/package.json', JSON.stringify({name:pkg.name,version:pkg.version,type:'commonjs',main:'main.js'},null,2)); fs.copyFileSync('electron/splash.html', 'dist-electron/splash.html')\"",
     "package:win": "npm run build && electron-builder --win nsis --x64",
+    "publish:github": "npm run build && electron-builder --win nsis --x64 --publish always",
     "start": "npm run build && electron .",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "framer-motion": "^12.43.0",
     "lucide-react": "^1.28.0",
     "react": "^19.2.8",
@@ -86,6 +88,14 @@
           ]
         }
       ]
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "eforendless",
+        "repo": "viAI-security-engine",
+        "releaseType": "release"
+      }
+    ]
   }
 }

@@ -3,7 +3,7 @@ import { recommendedSettings, type BackgroundSettings } from "./SettingsSchema.j
 const enumValues = {
   mediumRiskAction: new Set(["ignore", "notify", "sandbox", "ai"]),
   highRiskAction: new Set(["notify", "sandbox", "ai"]),
-  performanceMode: new Set(["low", "balanced", "high"]),
+  performanceMode: new Set(["light", "balanced", "deep"]),
   scanPriority: new Set(["low", "normal", "high"]),
   maximumParallelScans: new Set([0, 1, 2, 4, 8]),
 } as const;
@@ -17,6 +17,13 @@ export function validateSettings(value: unknown, fallback: BackgroundSettings = 
     if (typeof fallback[key] === "boolean" && typeof candidate === "boolean") result[key] = candidate;
     if (Array.isArray(fallback[key]) && Array.isArray(candidate) && candidate.every((entry) => typeof entry === "string")) result[key] = Object.freeze([...candidate]);
   }
-  for (const [key, valid] of Object.entries(enumValues)) if (valid.has(source[key] as never)) result[key] = source[key];
+  for (const [key, valid] of Object.entries(enumValues)) {
+    const candidate = key === "performanceMode" ? legacyPerformanceMode(source[key]) : source[key];
+    if (valid.has(candidate as never)) result[key] = candidate;
+  }
   return Object.freeze(result as unknown as BackgroundSettings);
+}
+
+function legacyPerformanceMode(value: unknown): unknown {
+  return value === "low" ? "light" : value === "high" ? "deep" : value;
 }

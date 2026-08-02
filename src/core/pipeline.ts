@@ -15,6 +15,7 @@ export interface PipelineOptions {
   trustedPublishers?: readonly TrustedPublisher[];
   trustAssessmentEngine?: TrustAssessmentEngine;
   evidencePipeline?: EvidenceExtractionPipeline;
+  maxConcurrentAnalyses?: number;
 }
 
 export class AnalysisPipeline {
@@ -23,12 +24,14 @@ export class AnalysisPipeline {
   private trustAssessmentEngine: TrustAssessmentEngine;
   private reportBuilder = new ReportBuilder();
   private evidencePipeline: EvidenceExtractionPipeline;
+  private analysisLimiter: AnalysisLimiter;
 
   constructor(options: PipelineOptions) {
     this.ruleEnginePromise = loadRuleEngine(options.rulesDirectory);
     this.reputationDatabase = new LocalReputationDatabase(options.reputationDatabasePath);
     this.trustAssessmentEngine = options.trustAssessmentEngine ?? createTrustAssessmentEngine(options.trustedPublishers ?? []);
     this.evidencePipeline = options.evidencePipeline ?? createDefaultEvidenceExtractionPipeline();
+    this.analysisLimiter = new AnalysisLimiter(options.maxConcurrentAnalyses ?? 2);
   }
 
   onEvidenceEvent(listener: (event: EvidencePipelineEvent) => void): () => void {
@@ -36,6 +39,10 @@ export class AnalysisPipeline {
   }
 
   async analyze(filePath: string, source?: "download" | "filesystem" | "removable-media"): Promise<AnalysisResult> {
+    return this.analysisLimiter.run(() => this.analyzeFile(filePath, source));
+  }
+
+  private async analyzeFile(filePath: string, source?: "download" | "filesystem" | "removable-media"): Promise<AnalysisResult> {
     const resolvedPath = resolve(filePath);
     const evidenceStore = await this.evidencePipeline.extract(resolvedPath, source);
     const hashes = requireEvidence(evidenceStore.hashes, "hashes");
@@ -111,6 +118,24 @@ function toDecision(recommendation: string): InvestigationDecision { return reco
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+class AnalysisLimiter {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly maximum: number) {}
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.active >= this.maximum) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    this.active += 1;
+    try {
+      return await operation();
+    } finally {
+      this.active -= 1;
+      this.waiting.shift()?.();
+    }
+  }
 }
 
 function createTrustAssessmentEngine(trustedPublishers: readonly TrustedPublisher[]): TrustAssessmentEngine {

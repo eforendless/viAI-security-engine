@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,19 @@ test("background history persists complete scan reports for later detail views",
     assert.deepEqual(snapshot.history[0].matchedRules, ["unsigned-executable"]);
     assert.equal(snapshot.history[0].report?.filePath, "C:\\samples\\setup.exe");
     assert.equal((snapshot.history[0].report?.evidenceStore as { processingMetadata?: { fileReadCount?: number } } | undefined)?.processingMetadata?.fileReadCount, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("background settings migrate legacy scan modes and retain deep mode", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-performance-"));
+  const path = join(directory, "background-settings.json");
+  try {
+    await writeFile(path, JSON.stringify({ settings: { performanceMode: "high" } }), "utf8");
+    const service = new BackgroundService(path, async () => undefined, () => undefined);
+    assert.equal((await service.initialize()).settings.performanceMode, "deep");
+    assert.equal((await service.update({ performanceMode: "light" })).settings.performanceMode, "light");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

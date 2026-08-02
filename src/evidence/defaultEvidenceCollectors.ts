@@ -1,6 +1,4 @@
-import { calculateShannonEntropy } from "../analyzer/entropyAnalyzer.js";
 import { collectFileSystemEvidenceFromSnapshot } from "../analyzer/fileSystemEvidenceCollector.js";
-import { analyzeHashesFromBytes } from "../analyzer/hashAnalyzer.js";
 import { extractMetadataFromSnapshot } from "../analyzer/metadataExtractor.js";
 import { detectPacker } from "../analyzer/packerDetector.js";
 import { parsePe } from "../analyzer/peAnalyzer.js";
@@ -14,7 +12,7 @@ export function createDefaultEvidenceExtractionPipeline(): EvidenceExtractionPip
 class HashEvidenceCollector implements EvidenceCollector {
   readonly id = "hash";
   async collect(context: Parameters<EvidenceCollector["collect"]>[0], evidence: Parameters<EvidenceCollector["collect"]>[1]) {
-    return enrichEvidence(evidence, { hashes: analyzeHashesFromBytes(context.snapshot.bytes) });
+    return enrichEvidence(evidence, { hashes: context.snapshot.hashes });
   }
 }
 
@@ -45,7 +43,7 @@ class SignatureEvidenceCollector implements EvidenceCollector {
 class EntropyEvidenceCollector implements EvidenceCollector {
   readonly id = "entropy";
   async collect(context: Parameters<EvidenceCollector["collect"]>[0], evidence: Parameters<EvidenceCollector["collect"]>[1]) {
-    return enrichEvidence(evidence, { entropy: calculateShannonEntropy(context.snapshot.bytes) });
+    return enrichEvidence(evidence, { entropy: context.snapshot.entropy });
   }
 }
 

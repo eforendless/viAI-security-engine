@@ -1,13 +1,20 @@
-import { type Stats } from "node:fs";
-import { lstat, readFile, stat } from "node:fs/promises";
+import { type Stats, createReadStream } from "node:fs";
+import { lstat, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import type { EvidenceCollectorExecution, EvidenceStore } from "../types.js";
+import { entropyFromCounts } from "../analyzer/entropyAnalyzer.js";
+import type { EvidenceCollectorExecution, EvidenceStore, Hashes } from "../types.js";
+
+export const MAX_INSPECTION_BYTES = 16 * 1024 * 1024;
 
 export interface EvidenceSnapshot {
   readonly filePath: string;
   readonly bytes: Buffer;
   readonly fileStat: Stats;
   readonly linkStat: Stats;
+  readonly hashes: Hashes;
+  readonly entropy: number;
+  readonly inspectionTruncated: boolean;
 }
 
 export interface EvidenceSnapshotReader {
@@ -69,7 +76,7 @@ export class EvidenceExtractionPipeline {
 
     const snapshot = await this.snapshotReader.read(resolvedPath, fileStat);
     const context: EvidenceCollectionContext = { filePath: resolvedPath, source, snapshot };
-    let evidence = createEvidenceStore(resolvedPath, source);
+    let evidence = createEvidenceStore(resolvedPath, source, snapshot.inspectionTruncated);
     for (const collector of this.options.collectors) {
       const startedAt = performance.now();
       this.emit({ type: "collector-started", filePath: resolvedPath, collectorId: collector.id });
@@ -100,20 +107,45 @@ export function enrichEvidence(evidence: EvidenceStore, updates: Partial<Evidenc
   return freezeEvidence({ ...evidence, ...updates, file: updates.file ? { ...updates.file } : evidence.file, processingMetadata: updates.processingMetadata ?? evidence.processingMetadata });
 }
 
-class LocalEvidenceSnapshotReader implements EvidenceSnapshotReader {
+export class LocalEvidenceSnapshotReader implements EvidenceSnapshotReader {
   probe(filePath: string): Promise<Stats> {
     return stat(filePath);
   }
 
   async read(filePath: string, fileStat: Stats): Promise<EvidenceSnapshot> {
     if (!fileStat.isFile()) throw new Error("Analysis requires a regular file");
-    const [bytes, linkStat] = await Promise.all([readFile(filePath), lstat(filePath)]);
-    return { filePath, bytes, fileStat, linkStat };
+    const sha256 = createHash("sha256");
+    const sha1 = createHash("sha1");
+    const md5 = createHash("md5");
+    const counts = new Uint32Array(256);
+    const chunks: Buffer[] = [];
+    let inspectedBytes = 0;
+    let totalBytes = 0;
+    const linkStat = await lstat(filePath);
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(filePath);
+      stream.on("data", (chunk: string | Buffer) => {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        sha256.update(bytes);
+        sha1.update(bytes);
+        md5.update(bytes);
+        totalBytes += bytes.length;
+        for (const byte of bytes) counts[byte] += 1;
+        if (inspectedBytes < MAX_INSPECTION_BYTES) {
+          const inspection = bytes.subarray(0, MAX_INSPECTION_BYTES - inspectedBytes);
+          chunks.push(inspection);
+          inspectedBytes += inspection.length;
+        }
+      });
+      stream.once("error", reject);
+      stream.once("end", resolve);
+    });
+    return { filePath, bytes: Buffer.concat(chunks, inspectedBytes), fileStat, linkStat, hashes: { sha256: sha256.digest("hex"), sha1: sha1.digest("hex"), md5: md5.digest("hex") }, entropy: entropyFromCounts(counts, totalBytes), inspectionTruncated: totalBytes > inspectedBytes };
   }
 }
 
-function createEvidenceStore(filePath: string, source: EvidenceCollectionContext["source"]): EvidenceStore {
-  return freezeEvidence({ schemaVersion: "0.2", file: { path: filePath, name: basename(filePath), source }, warnings: [], processingMetadata: { startedAt: new Date().toISOString(), cacheHit: false, fileReadCount: 0, peParseCount: 0, collectors: [] } });
+function createEvidenceStore(filePath: string, source: EvidenceCollectionContext["source"], inspectionTruncated: boolean): EvidenceStore {
+  return freezeEvidence({ schemaVersion: "0.2", file: { path: filePath, name: basename(filePath), source }, warnings: inspectionTruncated ? [`Inspection was limited to the first ${MAX_INSPECTION_BYTES / 1024 / 1024} MiB; hashes and entropy cover the full file.`] : [], processingMetadata: { startedAt: new Date().toISOString(), cacheHit: false, fileReadCount: 0, peParseCount: 0, collectors: [] } });
 }
 
 function recordCollector(evidence: EvidenceStore, collector: EvidenceCollectorExecution): EvidenceStore {

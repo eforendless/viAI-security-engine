@@ -214,7 +214,7 @@ function validateSettings(value: unknown): BackgroundSettings {
   const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const result: BackgroundSettings = { ...recommendedSettings };
   for (const [key, fallback] of Object.entries(recommendedSettings)) {
-    const candidate = source[key];
+    const candidate = key === "performanceMode" ? legacyPerformanceMode(source[key]) : source[key];
     if (typeof fallback === "boolean" && typeof candidate === "boolean") result[key] = candidate;
     else if (typeof fallback === "string" && typeof candidate === "string" && validEnum(key, candidate)) result[key] = candidate;
     else if (typeof fallback === "number" && typeof candidate === "number" && [0, 1, 2, 4, 8].includes(candidate)) result[key] = candidate;
@@ -223,7 +223,8 @@ function validateSettings(value: unknown): BackgroundSettings {
   return result;
 }
 
-function validEnum(key: string, value: string): boolean { return key === "mediumRiskAction" ? ["ignore", "notify", "sandbox", "ai"].includes(value) : key === "highRiskAction" ? ["notify", "sandbox", "ai"].includes(value) : key === "performanceMode" ? ["low", "balanced", "high"].includes(value) : key === "scanPriority" ? ["low", "normal", "high"].includes(value) : false; }
+function validEnum(key: string, value: string): boolean { return key === "mediumRiskAction" ? ["ignore", "notify", "sandbox", "ai"].includes(value) : key === "highRiskAction" ? ["notify", "sandbox", "ai"].includes(value) : key === "performanceMode" ? ["light", "balanced", "deep"].includes(value) : key === "scanPriority" ? ["low", "normal", "high"].includes(value) : false; }
+function legacyPerformanceMode(value: unknown): unknown { return value === "low" ? "light" : value === "high" ? "deep" : value; }
 function validateHistory(value: unknown): BackgroundHistoryRecord[] { return Array.isArray(value) ? value.filter((entry): entry is BackgroundHistoryRecord => Boolean(entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string" && typeof (entry as { detail?: unknown }).detail === "string")) : []; }
 function validateScan(value: unknown): PersistedScanState | undefined {
   if (!value || typeof value !== "object") return undefined;

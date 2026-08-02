@@ -26,7 +26,7 @@ interface SecurityState {
   usbMonitoring: boolean;
   executableMonitoring: boolean;
   darkMode: boolean;
-  performanceMode: "balanced" | "quiet" | "performance";
+  performanceMode: "light" | "balanced" | "deep";
   threadCount: number;
   setEngineOnline(online: boolean): void;
   addHistory(analysis: EngineAnalysis): void;
@@ -77,7 +77,7 @@ export const useSecurityStore = create<SecurityState>((set) => ({
     const monitors = new Set(Array.isArray(activeMonitors) ? activeMonitors.filter((monitor): monitor is string => typeof monitor === "string") : []);
     return {
       darkMode: "desktopDarkMode" in settings ? settings.desktopDarkMode === true : state.darkMode,
-      performanceMode: "performanceMode" in settings ? settings.performanceMode === "low" ? "quiet" : settings.performanceMode === "high" ? "performance" : "balanced" : state.performanceMode,
+      performanceMode: "performanceMode" in settings ? settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced" : state.performanceMode,
       threadCount: "maximumParallelScans" in settings ? number(settings.maximumParallelScans, 0) || 4 : state.threadCount,
       history: persistedHistory ? historyFromBackground(persistedHistory) : state.history,
       downloadMonitoring: Array.isArray(activeMonitors) ? monitors.has("download-files") : state.downloadMonitoring,

@@ -5,6 +5,7 @@ declare global {
     viai?: {
       application: {
         version(): Promise<string>;
+        clearLocalData(): Promise<void>;
       };
       updates: {
         snapshot(): Promise<unknown>;
@@ -20,7 +21,7 @@ declare global {
         restoreFactory(): Promise<unknown>;
         exportSettings(): Promise<string | undefined>;
         importSettings(serialized: string): Promise<unknown>;
-        clearHistory(): Promise<void>;
+        clearHistory(scope?: "all" | "low" | "medium" | "high"): Promise<void>;
         onChanged(listener: (snapshot: unknown) => void): () => void;
         onCommand(listener: (command: "quick-scan" | "realtime" | "history" | "settings") => void): () => void;
       };

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, opendir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, opendir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -110,6 +110,15 @@ export class DeviceSecurityService {
     this.scans = stored.scans;
     await this.refresh();
     if (this.started && process.platform === "win32") this.startPnPListener();
+  }
+
+  async clearData(): Promise<void> {
+    this.devices = [];
+    this.history = [];
+    this.scans = [];
+    this.activeScans.clear();
+    await rm(this.dataPath, { force: true });
+    this.notify(this.snapshot(), []);
   }
 
   stop(): void {

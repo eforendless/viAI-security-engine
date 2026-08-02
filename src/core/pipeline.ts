@@ -34,6 +34,8 @@ export class AnalysisPipeline {
     this.analysisLimiter = new AnalysisLimiter(options.maxConcurrentAnalyses ?? 2);
   }
 
+  async clearReputation(): Promise<void> { await this.reputationDatabase.clear(); }
+
   onEvidenceEvent(listener: (event: EvidencePipelineEvent) => void): () => void {
     return this.evidencePipeline.onEvent(listener);
   }

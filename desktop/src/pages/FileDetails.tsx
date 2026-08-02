@@ -2,7 +2,7 @@ import { ArrowLeft, Download, FileBadge, FolderOpen, ShieldCheck } from "lucide-
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Button, DropdownMenu, Panel, RiskBadge } from "../components/ui";
+import { Button, DropdownMenu, LoadingState, Panel, RiskBadge } from "../components/ui";
 import { pageMotion } from "../animations/motion";
 
 interface RecordDetail { id: string; kind: string; occurredAt: string; detail: string; filePath?: string; fileHash?: string; riskScore?: number; trustScore?: number; recommendation?: string; matchedRules?: string[]; trustIndicators?: string[]; engineVersion?: string; scanDurationMs?: number; scanType?: string; report?: Record<string, unknown>; }
@@ -11,8 +11,9 @@ type ExportFormat = "excel" | "pdf" | "html" | "json";
 const exportOptions = [{ value: "excel", label: "Excel" }, { value: "pdf", label: "PDF" }, { value: "html", label: "HTML" }, { value: "json", label: "JSON" }] as const;
 
 export default function FileDetails() {
-  const { id } = useParams(); const navigate = useNavigate(); const [record, setRecord] = useState<RecordDetail>();
-  useEffect(() => { let active = true; const select = (value: unknown) => { const next = (value as Snapshot)?.history?.find((entry) => entry.id === id); if (active) setRecord(next); }; void window.viai?.background.snapshot().then(select); return window.viai?.background.onChanged(select); }, [id]);
+  const { id } = useParams(); const navigate = useNavigate(); const [record, setRecord] = useState<RecordDetail>(); const [loaded, setLoaded] = useState(false);
+  useEffect(() => { let active = true; const select = (value: unknown) => { const next = (value as Snapshot)?.history?.find((entry) => entry.id === id); if (active) { setRecord(next); setLoaded(true); } }; void (async () => { try { select(await window.viai?.background.snapshot()); } catch { if (active) setLoaded(true); } })(); return window.viai?.background.onChanged(select); }, [id]);
+  if (!loaded) return <motion.div {...pageMotion} className="empty-report"><LoadingState title="Loading local report" detail="Retrieving the selected analysis report." /></motion.div>;
   if (!record) return <motion.div {...pageMotion} className="empty-report"><FileBadge size={42} /><h2>Report not found</h2><p>This local report is no longer available.</p><Button onClick={() => navigate("/history")}><ArrowLeft size={16} />Back to history</Button></motion.div>;
   const report = record.report ?? {}; const metadata = object(report.metadata); const hashes = object(report.hashes); const professional = object(report.report); const reportTrust = object(professional.trust); const reportRisk = object(professional.risk); const reportConfidence = object(professional.confidence); const signature = object(report.digitalSignature); const evidence = strings(report.evidence);
   const exportReport = (format: ExportFormat) => { const title = record.filePath?.split(/[\\/]/).pop() ?? "viAI analysis report"; const rows = reportRows(record, report, professional); const content = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre></body></html>`; if (format === "html") download(content, `${title}.html`, "text/html"); if (format === "json") download(JSON.stringify(record, null, 2), `${title}.json`, "application/json"); if (format === "excel") download(excelDocument(title, rows), `${title}.xls`, "application/vnd.ms-excel"); if (format === "pdf") download(pdfDocument(title, rows), `${title}.pdf`, "application/pdf"); };

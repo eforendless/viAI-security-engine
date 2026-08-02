@@ -303,7 +303,17 @@ ipcMain.handle("background:import", async (_event, serialized: string) => {
   if (typeof serialized !== "string" || serialized.length > 256_000) throw new Error("Invalid settings import");
   return backgroundService?.importSettings(serialized);
 });
-ipcMain.handle("background:clear-history", () => backgroundService?.clearHistory());
+ipcMain.handle("background:clear-history", async (_event, scope: "all" | "low" | "medium" | "high" = "all") => {
+  if (!backgroundService || !["all", "low", "medium", "high"].includes(scope)) throw new Error("Invalid history clear scope");
+  await backgroundService.clearHistory(scope);
+});
+ipcMain.handle("application:clear-local-data", async () => {
+  await scanService?.cancelAndWait();
+  await backgroundService?.clearAllData();
+  await deviceSecurity?.clearData();
+  const response = await fetch("http://127.0.0.1:4117/data/reset", { method: "POST" });
+  if (!response.ok) throw new Error("Could not reset local engine data");
+});
 
 ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", target?: string) => {
   if (!scanService || !backgroundService || !["quick", "full", "folder"].includes(mode)) throw new Error("Scan service is not ready");
@@ -368,14 +378,14 @@ const engineAnalysisTimeoutMs = 120_000;
 
 ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
 
-async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file"): Promise<Record<string, unknown>> {
+async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
   try {
     const response = await fetch(engineUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: filePath }),
-      signal: AbortSignal.timeout(engineAnalysisTimeoutMs),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs))),
     });
     const responseText = await response.text();
     let body: Record<string, unknown>;

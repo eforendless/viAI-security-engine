@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("viai", {
   application: {
     version: () => ipcRenderer.invoke("application:version") as Promise<string>,
+    clearLocalData: () => ipcRenderer.invoke("application:clear-local-data") as Promise<void>,
   },
   updates: {
     snapshot: () => ipcRenderer.invoke("updates:snapshot") as Promise<unknown>,
@@ -18,7 +19,7 @@ contextBridge.exposeInMainWorld("viai", {
     restoreFactory: () => ipcRenderer.invoke("background:restore-factory") as Promise<unknown>,
     exportSettings: () => ipcRenderer.invoke("background:export") as Promise<string | undefined>,
     importSettings: (serialized: string) => ipcRenderer.invoke("background:import", serialized) as Promise<unknown>,
-    clearHistory: () => ipcRenderer.invoke("background:clear-history") as Promise<void>,
+    clearHistory: (scope: "all" | "low" | "medium" | "high" = "all") => ipcRenderer.invoke("background:clear-history", scope) as Promise<void>,
     onChanged: (listener: (snapshot: unknown) => void) => { const handler = (_event: Electron.IpcRendererEvent, snapshot: unknown) => listener(snapshot); ipcRenderer.on("background:changed", handler); return () => ipcRenderer.removeListener("background:changed", handler); },
     onCommand: (listener: (command: "quick-scan" | "realtime" | "history" | "settings") => void) => { const handler = (_event: Electron.IpcRendererEvent, command: "quick-scan" | "realtime" | "history" | "settings") => listener(command); ipcRenderer.on("background:command", handler); return () => ipcRenderer.removeListener("background:command", handler); },
   },

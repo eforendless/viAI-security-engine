@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { ScanCacheEntry } from "./fileClassification";
 
 type SettingValue = boolean | string | number | string[];
 export type BackgroundSettings = Record<string, SettingValue>;
@@ -44,6 +45,19 @@ export interface PersistedScanState {
   pausedAt?: string;
   pausedDurationMs: number;
   estimatedRemainingMs?: number;
+  forensicCount?: number;
+  inventoryCount?: number;
+  errorCount?: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+  cacheSkipped?: number;
+  workersActive?: number;
+  workersTotal?: number;
+  peakQueueLength?: number;
+  throughputPerSecond?: number;
+  cpuPercent?: number;
+  memoryBytes?: number;
+  priorityRemaining?: Partial<Record<"critical" | "high" | "medium" | "low" | "inventory", number>>;
   pendingFiles: string[];
 }
 
@@ -56,6 +70,7 @@ export interface BackgroundSnapshot {
 
 interface StoredBackgroundState { settings?: unknown; history?: unknown; activeScan?: unknown; }
 export interface SaveScanOptions { persist?: boolean; publish?: boolean; }
+export type HistoryClearScope = "all" | "low" | "medium" | "high";
 
 export const recommendedSettings: BackgroundSettings = Object.freeze({
   backgroundProtection: true, runAfterWindowCloses: true, launchOnStartup: true, startMinimized: false, startSilently: false, openDashboardAfterStartup: true, minimizeToTray: true, windowsNotifications: true, soundNotifications: false, desktopDarkMode: false,
@@ -81,16 +96,20 @@ export class BackgroundService {
   private activeScan?: PersistedScanState;
   private mutation: Promise<void> = Promise.resolve();
   private readonly historyPath: string;
+  private readonly scanCachePath: string;
+  private readonly scanCache = new Map<string, ScanCacheEntry>();
+  private scanCacheDirty = false;
   private historyDirty = false;
   private historyFlushTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void) { this.historyPath = join(dirname(dataPath), "background-history.json"); }
+  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void) { this.historyPath = join(dirname(dataPath), "background-history.json"); this.scanCachePath = join(dirname(dataPath), "scan-cache.json"); }
 
   async initialize(): Promise<BackgroundSnapshot> {
     const stored = await this.read();
     this.settings = validateSettings(stored.settings);
     this.legacyHistory = validateHistory(stored.history);
     this.activeScan = validateScan(stored.activeScan);
+    await this.loadScanCache();
     await this.apply();
     return this.snapshot();
   }
@@ -102,9 +121,13 @@ export class BackgroundService {
   async restoreFactory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...factorySettings }; await this.apply(); await this.persist(); return this.publish(); }); }
   exportSettings(): string { return JSON.stringify(this.settings, null, 2); }
   async importSettings(serialized: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); await this.persist(); return this.publish(); }); }
-  async clearHistory(): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = []; await this.persistHistory(); this.publish(); }); }
+  async clearHistory(scope: HistoryClearScope = "all"): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = scope === "all" ? [] : this.history.filter((record) => riskLevel(record.riskScore) !== scope); await this.persistHistory(); this.publish(); }); }
+  async clearAllData(): Promise<void> { await this.enqueue(async () => { this.settings = { ...factorySettings }; this.history = []; this.legacyHistory = []; this.historyLoaded = true; this.historyDirty = false; this.activeScan = undefined; this.scanCache.clear(); this.scanCacheDirty = false; await this.apply(); await rm(this.dataPath, { force: true }); await rm(this.historyPath, { force: true }); await rm(this.scanCachePath, { force: true }); this.publish(); }); }
   async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
   async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
+  scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.scanCache.get(cacheKey(filePath)); }
+  recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
+  async flushScanCache(): Promise<void> { await this.enqueue(async () => { if (!this.scanCacheDirty) return; await mkdir(dirname(this.scanCachePath), { recursive: true }); const temporary = `${this.scanCachePath}.tmp`; await writeFile(temporary, JSON.stringify(Object.fromEntries(this.scanCache)), "utf8"); await rename(temporary, this.scanCachePath); this.scanCacheDirty = false; }); }
 
   async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false): Promise<void> {
     const analysis = analysisRecord(body);
@@ -207,6 +230,7 @@ export class BackgroundService {
   }
   private async persist(): Promise<void> { await mkdir(dirname(this.dataPath), { recursive: true }); const temporary = `${this.dataPath}.tmp`; const legacy = !this.historyLoaded && this.legacyHistory.length ? { history: this.legacyHistory } : {}; await writeFile(temporary, JSON.stringify({ settings: this.settings, activeScan: this.activeScan, ...legacy }, null, 2), "utf8"); await rename(temporary, this.dataPath); }
   private async persistHistory(): Promise<void> { await mkdir(dirname(this.historyPath), { recursive: true }); const temporary = `${this.historyPath}.tmp`; await writeFile(temporary, JSON.stringify(this.history, null, 2), "utf8"); await rename(temporary, this.historyPath); }
+  private async loadScanCache(): Promise<void> { if (!existsSync(this.scanCachePath)) return; try { const stored = JSON.parse(await readFile(this.scanCachePath, "utf8")) as Record<string, unknown>; for (const [filePath, value] of Object.entries(stored)) { const entry = validateScanCacheEntry(value); if (entry) this.scanCache.set(filePath, entry); } } catch { this.scanCache.clear(); } }
   private async read(): Promise<StoredBackgroundState> { if (!existsSync(this.dataPath)) return {}; try { return JSON.parse(await readFile(this.dataPath, "utf8")) as StoredBackgroundState; } catch { return {}; } }
 }
 
@@ -224,14 +248,27 @@ function validateSettings(value: unknown): BackgroundSettings {
 }
 
 function validEnum(key: string, value: string): boolean { return key === "mediumRiskAction" ? ["ignore", "notify", "sandbox", "ai"].includes(value) : key === "highRiskAction" ? ["notify", "sandbox", "ai"].includes(value) : key === "performanceMode" ? ["light", "balanced", "deep"].includes(value) : key === "scanPriority" ? ["low", "normal", "high"].includes(value) : false; }
+function riskLevel(score: number | undefined): Exclude<HistoryClearScope, "all"> { return (score ?? 0) <= 25 ? "low" : (score ?? 0) <= 60 ? "medium" : "high"; }
 function legacyPerformanceMode(value: unknown): unknown { return value === "low" ? "light" : value === "high" ? "deep" : value; }
 function validateHistory(value: unknown): BackgroundHistoryRecord[] { return Array.isArray(value) ? value.filter((entry): entry is BackgroundHistoryRecord => Boolean(entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string" && typeof (entry as { detail?: unknown }).detail === "string")) : []; }
+function cacheKey(filePath: string): string { return filePath.replaceAll("/", "\\").toLowerCase(); }
+function validateScanCacheEntry(value: unknown): ScanCacheEntry | undefined { if (!value || typeof value !== "object") return undefined; const entry = value as Partial<ScanCacheEntry>; return typeof entry.size === "number" && Number.isFinite(entry.size) && typeof entry.mtimeMs === "number" && Number.isFinite(entry.mtimeMs) && typeof entry.analyzedAt === "string" && typeof entry.priorityScore === "number" && Number.isFinite(entry.priorityScore) ? { size: entry.size, mtimeMs: entry.mtimeMs, analyzedAt: entry.analyzedAt, priorityScore: entry.priorityScore, signatureStatus: typeof entry.signatureStatus === "string" ? entry.signatureStatus : undefined } : undefined; }
 function validateScan(value: unknown): PersistedScanState | undefined {
   if (!value || typeof value !== "object") return undefined;
   const scan = value as Partial<PersistedScanState>;
   if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["running", "paused", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
   const number = (candidate: unknown, fallback = 0) => typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? candidate : fallback;
-  return { id: scan.id, mode: scan.mode as PersistedScanState["mode"], target: typeof scan.target === "string" ? scan.target : "", startedAt: typeof scan.startedAt === "string" ? scan.startedAt : new Date().toISOString(), updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(), currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "", filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined, pendingFiles: [...scan.pendingFiles] };
+  const priorityRemaining = scan.priorityRemaining && typeof scan.priorityRemaining === "object" ? Object.fromEntries(["critical", "high", "medium", "low", "inventory"].map((band) => [band, number((scan.priorityRemaining as Record<string, unknown>)[band])])) : undefined;
+  return {
+    id: scan.id,
+    mode: scan.mode as PersistedScanState["mode"],
+    target: typeof scan.target === "string" ? scan.target : "",
+    startedAt: typeof scan.startedAt === "string" ? scan.startedAt : new Date().toISOString(),
+    updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(),
+    currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "",
+    filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined,
+    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, pendingFiles: [...scan.pendingFiles],
+  };
 }
 function publicScan(scan: PersistedScanState): Omit<PersistedScanState, "pendingFiles"> { const { pendingFiles: _pendingFiles, ...publicState } = scan; return publicState; }
 function cloneRecord(value: Record<string, any>): Record<string, unknown> { return JSON.parse(JSON.stringify(value)) as Record<string, unknown>; }

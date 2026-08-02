@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ReputationRecord, ReputationResult } from "../types.js";
 
@@ -30,6 +30,8 @@ export class LocalReputationDatabase {
       await this.writeRecords(records);
     });
   }
+
+  async clear(): Promise<void> { await this.enqueue(async () => rm(this.databasePath, { force: true })); }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.transaction.then(operation, operation);

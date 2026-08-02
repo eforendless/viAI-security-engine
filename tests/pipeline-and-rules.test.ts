@@ -94,3 +94,16 @@ test("reputation database recovers from malformed stored JSON", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("reputation database clear removes local scan cache", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-reputation-"));
+  const databasePath = join(directory, "reputation.json");
+  const database = new LocalReputationDatabase(databasePath);
+  try {
+    await database.recordSeen("cached-hash", "cached.exe");
+    await database.clear();
+    await assert.rejects(readFile(databasePath, "utf8"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

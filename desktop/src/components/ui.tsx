@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, Info } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, Info, LoaderCircle } from "lucide-react";
 import type { RiskLevel } from "../types";
 
 export function Panel({ children, className = "" }: PropsWithChildren<{ className?: string }>) {
@@ -39,5 +39,15 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
 }
 
 export function Skeleton({ className = "" }: { className?: string }) { return <div className={`skeleton ${className}`} aria-hidden="true" />; }
+
+export function LoadingState({ title = "Loading local data", detail = "Retrieving records stored on this device." }: { title?: string; detail?: string }) {
+  return <div className="loading-state" role="status" aria-live="polite"><span className="loading-state-icon"><LoaderCircle size={24} /></span><div><strong>{title}</strong><p>{detail}</p></div></div>;
+}
+
+export function ConfirmDialog({ open, title, detail, confirmLabel, onCancel, onConfirm, children }: { open: boolean; title: string; detail: string; confirmLabel: string; onCancel(): void; onConfirm(): void; children?: ReactNode }) {
+  useEffect(() => { if (!open) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancel(); }; document.addEventListener("keydown", closeOnEscape); return () => document.removeEventListener("keydown", closeOnEscape); }, [open, onCancel]);
+  if (!open) return null;
+  return <div className="confirm-backdrop" role="presentation" onMouseDown={onCancel}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" onMouseDown={(event) => event.stopPropagation()}><h2 id="confirm-dialog-title">{title}</h2><p>{detail}</p>{children}<div className="confirm-actions"><Button type="button" onClick={onCancel}>Cancel</Button><Button type="button" className="danger" onClick={onConfirm}>{confirmLabel}</Button></div></section></div>;
+}
 
 export type IconType = LucideIcon;

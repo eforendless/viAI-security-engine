@@ -61,6 +61,15 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
       }
       return;
     }
+      if (request.method === "POST" && request.url === "/data/reset") {
+        try {
+          await pipeline.clearReputation();
+          response.writeHead(204).end();
+        } catch (error) {
+          response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : "local data reset failed" }));
+        }
+        return;
+      }
     if (request.method !== "POST" || request.url !== "/analyze") {
       response.writeHead(404).end();
       return;

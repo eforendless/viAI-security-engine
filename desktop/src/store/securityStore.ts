@@ -16,6 +16,18 @@ export interface ScanState {
   stage?: string;
   estimatedRemainingMs?: number;
   pausedDurationMs?: number;
+  forensicCount?: number;
+  inventoryCount?: number;
+  errorCount?: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+  cacheSkipped?: number;
+  workersActive?: number;
+  workersTotal?: number;
+  throughputPerSecond?: number;
+    cpuPercent?: number;
+    memoryBytes?: number;
+  priorityRemaining?: Partial<Record<"critical" | "high" | "medium" | "low" | "inventory", number>>;
 }
 
 interface SecurityState {
@@ -83,10 +95,17 @@ export const useSecurityStore = create<SecurityState>((set) => ({
       downloadMonitoring: Array.isArray(activeMonitors) ? monitors.has("download-files") : state.downloadMonitoring,
       usbMonitoring: Array.isArray(activeMonitors) ? monitors.has("device-security") : state.usbMonitoring,
       executableMonitoring: Array.isArray(activeMonitors) ? monitors.has("filesystem-candidates") : state.executableMonitoring,
-      scan: remoteScan ? status === "cancelled" ? { ...idleScan } : { active: scanActive, paused: status === "paused", cancelled: false, mode, target: typeof remoteScan.target === "string" ? remoteScan.target : "", total: number(remoteScan.totalFiles, 0), completed: number(remoteScan.filesCompleted, 0), investigationCount: number(remoteScan.investigationCount, 0), currentPath: typeof remoteScan.currentFile === "string" ? remoteScan.currentFile : "", startedAt: typeof remoteScan.startedAt === "string" ? Date.parse(remoteScan.startedAt) : undefined, status: status as ScanState["status"], stage: typeof remoteScan.currentStage === "string" ? remoteScan.currentStage : undefined, estimatedRemainingMs: typeof remoteScan.estimatedRemainingMs === "number" ? remoteScan.estimatedRemainingMs : undefined, pausedDurationMs: number(remoteScan.pausedDurationMs, 0) } : state.scan,
+      scan: remoteScan ? status === "cancelled" ? { ...idleScan } : { active: scanActive, paused: status === "paused", cancelled: false, mode, target: typeof remoteScan.target === "string" ? remoteScan.target : "", total: number(remoteScan.totalFiles, 0), completed: number(remoteScan.filesCompleted, 0), investigationCount: number(remoteScan.investigationCount, 0), currentPath: typeof remoteScan.currentFile === "string" ? remoteScan.currentFile : "", startedAt: typeof remoteScan.startedAt === "string" ? Date.parse(remoteScan.startedAt) : undefined, status: status as ScanState["status"], stage: typeof remoteScan.currentStage === "string" ? remoteScan.currentStage : undefined, estimatedRemainingMs: typeof remoteScan.estimatedRemainingMs === "number" ? remoteScan.estimatedRemainingMs : undefined, pausedDurationMs: number(remoteScan.pausedDurationMs, 0), forensicCount: number(remoteScan.forensicCount, 0), inventoryCount: number(remoteScan.inventoryCount, 0), errorCount: number(remoteScan.errorCount, 0), cacheHits: number(remoteScan.cacheHits, 0), cacheMisses: number(remoteScan.cacheMisses, 0), cacheSkipped: number(remoteScan.cacheSkipped, 0), workersActive: number(remoteScan.workersActive, 0), workersTotal: number(remoteScan.workersTotal, 0), throughputPerSecond: number(remoteScan.throughputPerSecond, 0), cpuPercent: number(remoteScan.cpuPercent, 0), memoryBytes: number(remoteScan.memoryBytes, 0), priorityRemaining: priorityBuckets(remoteScan.priorityRemaining) } : state.scan,
     };
   }),
 }));
+
+function priorityBuckets(value: unknown): ScanState["priorityRemaining"] {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const count = (band: string) => typeof source[band] === "number" && Number.isFinite(source[band]) ? Math.max(0, source[band]) : 0;
+  return { critical: count("critical"), high: count("high"), medium: count("medium"), low: count("low"), inventory: count("inventory") };
+}
 
 function historyFromBackground(records: unknown[]): HistoryItem[] {
   return records.flatMap((record) => {

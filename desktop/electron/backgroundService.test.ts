@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -35,6 +36,26 @@ test("background settings migrate legacy scan modes and retain deep mode", async
     const service = new BackgroundService(path, async () => undefined, () => undefined);
     assert.equal((await service.initialize()).settings.performanceMode, "deep");
     assert.equal((await service.update({ performanceMode: "light" })).settings.performanceMode, "light");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("history can be cleared by risk scope and a full reset removes persisted local data", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-clear-data-"));
+  const path = join(directory, "background-settings.json");
+  try {
+    const service = new BackgroundService(path, async () => undefined, () => undefined);
+    await service.initialize();
+    await service.recordAnalysis({ analysis: { filePath: "C:\\samples\\safe.exe", analyzedAt: "2026-08-01T10:00:00.000Z", hashes: { sha256: "b".repeat(64) }, finalRiskScore: 10, trustScore: 80, recommendation: "ALLOW", metadata: {} } });
+    await service.recordAnalysis({ analysis: { filePath: "C:\\samples\\risk.exe", analyzedAt: "2026-08-01T10:01:00.000Z", hashes: { sha256: "c".repeat(64) }, finalRiskScore: 75, trustScore: 10, recommendation: "AI_ANALYSIS", metadata: {} } });
+    await service.clearHistory("high");
+    assert.equal((await service.loadHistory()).history.length, 1);
+    await service.clearAllData();
+    assert.equal(service.snapshot().history.length, 0);
+    assert.equal(service.snapshot().activeScan, undefined);
+    assert.equal(existsSync(path), false);
+    assert.equal(existsSync(join(directory, "background-history.json")), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -4,13 +4,22 @@ when
 pe.packerDetected
 
 score
-15
+5
 
 severity
-medium
+low
+
+category
+packing
+
+strength
+weak
+
+correlationGroup
+packing-indicators
 
 recommendation
-SANDBOX
+MONITOR
 
 evidence
 "Packer indicators were detected."

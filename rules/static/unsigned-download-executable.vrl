@@ -6,7 +6,7 @@ Unsigned executable discovered in a downloads location.
 when
 file.isExecutable
 and
-!signature.isSigned
+signature.status == "missing"
 and
 source.isDownload
 
@@ -15,6 +15,12 @@ score
 
 severity
 medium
+
+category
+provenance
+
+strength
+moderate
 
 recommendation
 SANDBOX

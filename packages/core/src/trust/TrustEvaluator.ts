@@ -26,10 +26,12 @@ export interface TrustEvaluationContext {
     readonly publisher?: string;
     readonly certificateStatus: CertificateTrustStatus;
     readonly hasTrustedTimestamp?: boolean;
+    readonly verificationState?: "signed-trusted" | "signed-valid" | "signed-untrusted" | "signed-expired" | "signed-revoked" | "signed-self-signed" | "unsigned" | "verification-unavailable" | "verification-error";
   };
   readonly version?: VersionInformation;
   readonly installationContexts?: readonly InstallationContext[];
   readonly hashReputation?: HashReputation;
+  readonly baseline?: { readonly state: "new" | "unchanged" | "changed" | "signer-changed" | "signature-changed"; readonly systemLocation: boolean; };
   readonly staticEvidence?: {
     readonly previouslySeenHash: boolean;
     readonly isPe: boolean;

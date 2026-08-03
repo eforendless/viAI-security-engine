@@ -4,10 +4,19 @@ when
 file.entropy >= 7.2
 
 score
-15
+5
 
 severity
-medium
+low
+
+category
+entropy
+
+strength
+weak
+
+correlationGroup
+packing-indicators
 
 recommendation
 MONITOR

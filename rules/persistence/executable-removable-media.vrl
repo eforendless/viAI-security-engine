@@ -11,6 +11,12 @@ score
 severity
 low
 
+category
+filesystem-context
+
+strength
+weak
+
 recommendation
 MONITOR
 

@@ -3,6 +3,7 @@ import { lstat, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { entropyFromCounts } from "../analyzer/entropyAnalyzer.js";
+import { isAbortError, throwIfAborted } from "../core/cancellation.js";
 import type { EvidenceCollectorExecution, EvidenceStore, Hashes } from "../types.js";
 
 export const MAX_INSPECTION_BYTES = 16 * 1024 * 1024;
@@ -19,12 +20,13 @@ export interface EvidenceSnapshot {
 
 export interface EvidenceSnapshotReader {
   probe(filePath: string): Promise<Stats>;
-  read(filePath: string, fileStat: Stats): Promise<EvidenceSnapshot>;
+  read(filePath: string, fileStat: Stats, signal?: AbortSignal): Promise<EvidenceSnapshot>;
 }
 
 export interface EvidenceCollectionContext {
   readonly filePath: string;
   readonly source?: "download" | "filesystem" | "removable-media";
+  readonly signal?: AbortSignal;
   readonly snapshot: EvidenceSnapshot;
 }
 
@@ -63,9 +65,11 @@ export class EvidenceExtractionPipeline {
     return () => this.listeners.delete(listener);
   }
 
-  async extract(filePath: string, source?: "download" | "filesystem" | "removable-media"): Promise<EvidenceStore> {
+  async extract(filePath: string, source?: "download" | "filesystem" | "removable-media", signal?: AbortSignal): Promise<EvidenceStore> {
+    throwIfAborted(signal);
     const resolvedPath = resolve(filePath);
     const fileStat = await this.snapshotReader.probe(resolvedPath);
+    throwIfAborted(signal);
     const cacheKey = `${resolvedPath}\u0000${source ?? "unknown"}\u0000${fileStat.size}\u0000${fileStat.mtimeMs}`;
     const cached = this.cache.get(cacheKey);
     if (cached) {
@@ -74,10 +78,11 @@ export class EvidenceExtractionPipeline {
       return evidence;
     }
 
-    const snapshot = await this.snapshotReader.read(resolvedPath, fileStat);
-    const context: EvidenceCollectionContext = { filePath: resolvedPath, source, snapshot };
+    const snapshot = await this.snapshotReader.read(resolvedPath, fileStat, signal);
+    const context: EvidenceCollectionContext = { filePath: resolvedPath, source, snapshot, signal };
     let evidence = createEvidenceStore(resolvedPath, source, snapshot.inspectionTruncated);
     for (const collector of this.options.collectors) {
+      throwIfAborted(signal);
       const startedAt = performance.now();
       this.emit({ type: "collector-started", filePath: resolvedPath, collectorId: collector.id });
       try {
@@ -86,6 +91,7 @@ export class EvidenceExtractionPipeline {
         evidence = recordCollector(evidence, { id: collector.id, status: "completed", durationMs });
         this.emit({ type: "collector-finished", filePath: resolvedPath, collectorId: collector.id, durationMs });
       } catch (error) {
+        if (isAbortError(error)) throw error;
         const durationMs = Math.round(performance.now() - startedAt);
         const warning = `${collector.id}: ${error instanceof Error ? error.message : "collection failed"}`;
         evidence = recordCollector(enrichEvidence(evidence, { warnings: [...evidence.warnings, warning] }), { id: collector.id, status: "failed", durationMs, warning });
@@ -112,7 +118,8 @@ export class LocalEvidenceSnapshotReader implements EvidenceSnapshotReader {
     return stat(filePath);
   }
 
-  async read(filePath: string, fileStat: Stats): Promise<EvidenceSnapshot> {
+  async read(filePath: string, fileStat: Stats, signal?: AbortSignal): Promise<EvidenceSnapshot> {
+    throwIfAborted(signal);
     if (!fileStat.isFile()) throw new Error("Analysis requires a regular file");
     const sha256 = createHash("sha256");
     const sha1 = createHash("sha1");
@@ -122,9 +129,12 @@ export class LocalEvidenceSnapshotReader implements EvidenceSnapshotReader {
     let inspectedBytes = 0;
     let totalBytes = 0;
     const linkStat = await lstat(filePath);
+    throwIfAborted(signal);
     await new Promise<void>((resolve, reject) => {
       const stream = createReadStream(filePath);
+      const onAbort = () => stream.destroy(signal?.reason instanceof Error ? signal.reason : new Error("Operation cancelled"));
       stream.on("data", (chunk: string | Buffer) => {
+        try { throwIfAborted(signal); } catch (error) { stream.destroy(error as Error); return; }
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         sha256.update(bytes);
         sha1.update(bytes);
@@ -137,9 +147,11 @@ export class LocalEvidenceSnapshotReader implements EvidenceSnapshotReader {
           inspectedBytes += inspection.length;
         }
       });
-      stream.once("error", reject);
-      stream.once("end", resolve);
+      stream.once("error", (error) => { signal?.removeEventListener("abort", onAbort); reject(error); });
+      stream.once("end", () => { signal?.removeEventListener("abort", onAbort); resolve(); });
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
+    throwIfAborted(signal);
     return { filePath, bytes: Buffer.concat(chunks, inspectedBytes), fileStat, linkStat, hashes: { sha256: sha256.digest("hex"), sha1: sha1.digest("hex"), md5: md5.digest("hex") }, entropy: entropyFromCounts(counts, totalBytes), inspectionTruncated: totalBytes > inspectedBytes };
   }
 }

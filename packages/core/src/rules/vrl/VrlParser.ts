@@ -1,11 +1,13 @@
 import type { ExpressionNode, ParsedRule, RuleOrigin, SourceSpan } from "../Rule.js";
-import type { Recommendation, RuleSeverity } from "../RuleResult.js";
+import type { EvidenceCategory, EvidenceStrength, Recommendation, RuleSeverity } from "../RuleResult.js";
 import type { RuleDiagnostic } from "../RuleParser.js";
 import { VrlLexer, type VrlToken } from "./VrlLexer.js";
 
-const sections = new Set(["description", "when", "score", "severity", "recommendation", "evidence"]);
-const recommendations = new Set<Recommendation>(["ALLOW", "MONITOR", "SANDBOX", "AI_ANALYSIS"]);
+const sections = new Set(["description", "when", "score", "severity", "recommendation", "evidence", "category", "strength", "correlationGroup"]);
+const recommendations = new Set<Recommendation>(["ALLOW", "MONITOR", "REVIEW", "DYNAMIC_ANALYSIS", "SANDBOX", "AI_ANALYSIS"]);
 const severities = new Set<RuleSeverity>(["low", "medium", "high"]);
+const categories = new Set<EvidenceCategory>(["provenance", "execution", "memory", "process-access", "persistence", "network", "packing", "entropy", "pe-structure", "filesystem-context", "baseline", "signature", "reputation"]);
+const strengths = new Set<EvidenceStrength>(["informational", "weak", "moderate", "strong", "very-strong"]);
 
 export class VrlParser {
   parse(source: string, origin: RuleOrigin): { rules: ParsedRule[]; diagnostics: RuleDiagnostic[] } {
@@ -34,6 +36,9 @@ class ParserState {
     let severity: RuleSeverity = "low";
     let recommendation: Recommendation | undefined;
     let evidence: string | undefined;
+    let category: EvidenceCategory | undefined;
+    let strength: EvidenceStrength | undefined;
+    let correlationGroup: string | undefined;
     while (!this.at("eof")) {
       this.skipNewlines();
       if (this.at("eof")) break;
@@ -44,12 +49,15 @@ class ParserState {
       if (section === "score") { score = Number(this.readValue()); continue; }
       if (section === "severity") { const value = this.readValue(); if (!severities.has(value as RuleSeverity)) this.fail(`Invalid severity '${value}'`); severity = value as RuleSeverity; continue; }
       if (section === "recommendation") { const value = this.readValue(); if (!recommendations.has(value as Recommendation)) this.fail(`Invalid recommendation '${value}'`); recommendation = value as Recommendation; continue; }
+      if (section === "category") { const value = this.readValue(); if (!categories.has(value as EvidenceCategory)) this.fail(`Invalid category '${value}'`); category = value as EvidenceCategory; continue; }
+      if (section === "strength") { const value = this.readValue(); if (!strengths.has(value as EvidenceStrength)) this.fail(`Invalid strength '${value}'`); strength = value as EvidenceStrength; continue; }
+      if (section === "correlationGroup") { correlationGroup = this.readValue(); continue; }
       evidence = this.readValue();
     }
     if (!when) this.fail("Rule requires a when expression");
     if (score === undefined || !Number.isFinite(score)) this.fail("Rule requires a numeric score");
     if (!evidence) this.fail("Rule requires evidence");
-    return { id, description, when, score, severity, recommendation, evidence, origin: this.origin };
+    return { id, description, when, score, severity, recommendation, evidence, category, strength, correlationGroup, origin: this.origin };
   }
 
   private parseExpression(): ExpressionNode { return this.parseOr(); }

@@ -8,6 +8,8 @@ import { Worker } from "node:worker_threads";
 import { DeviceSecurityService, type DeviceSecuritySnapshot } from "./deviceSecurity";
 import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate, type PersistedScanState } from "./backgroundService";
 import { ScanService, type ScanEventName } from "./scanService";
+import type { ScanController } from "./scanController";
+import { notificationForAnalysis } from "./analysisNotification";
 import { StartupManager, type StartupProgress } from "./startup";
 import { collectSystemOverview } from "./systemOverview";
 import { UpdateService } from "./updater";
@@ -221,7 +223,7 @@ function configureStartup(): StartupManager {
     { id: "engine", name: "Initializing analysis, rules, and trust engines", weight: 25, dependencies: ["configuration"], execute: async () => { await startEngine(); await waitForEngineReady(); } },
     { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["engine"], execute: async () => { backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground, engineVersion()); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
     { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["persistence"], execute: async () => { deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; return { monitorUsbStorage: settings?.monitorUsbStorage === true, monitorUsbInsertion: settings?.monitorUsbInsertion === true, automaticallyScanUsb: settings?.automaticallyScanUsb === true }; }); await deviceSecurity.start(); } },
-    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType) => analyzeEngineFile(filePath, scanType), publishScan); await scanService.recover(); } },
+    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType, _classification, signal) => analyzeEngineFile(filePath, scanType, engineAnalysisTimeoutMs, signal), publishScan); await scanService.recover(); } },
     { id: "notifications", name: "Preparing local notifications", weight: 5, dependencies: ["persistence"], execute: async () => { Notification.isSupported(); } },
     { id: "tray", name: "Creating secure system tray service", weight: 5, dependencies: ["persistence"], execute: async () => { createTray(); } },
     { id: "dashboard", name: "Preparing secure dashboard", weight: 15, dependencies: ["persistence"], execute: async () => { await prepareDashboard(); announceStartupReady(); } },
@@ -350,7 +352,8 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
     const parallel = scanConcurrency(performanceMode, configuredParallel);
     const scan = await scanService.start(mode, target, [], parallel, false);
-    void streamCandidates([target], false, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).finally(() => scanService?.finishDiscovery(scan.id));
+    const controller = scanService.controllerFor(scan.id);
+    void streamCandidates([target], false, controller, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).then(() => scanService?.finishDiscovery(scan.id));
     return scan;
   } else {
     const home = homedir();
@@ -359,10 +362,12 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
     const parallel = scanConcurrency(performanceMode, configuredParallel);
     const scan = await scanService.start(mode, target, [], parallel, false);
+    const controller = scanService.controllerFor(scan.id);
     void (async () => {
+      if (controller?.signal.aborted) return;
       const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync);
-      await streamCandidates(roots, performanceMode === "deep", (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve());
-      await scanService?.finishDiscovery(scan.id);
+      await streamCandidates(roots, performanceMode === "deep", controller, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve());
+      if (!controller?.signal.aborted) await scanService?.finishDiscovery(scan.id);
     })();
     return scan;
   }
@@ -414,14 +419,15 @@ const engineAnalysisConcurrency = 2;
 
 ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
 
-async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs): Promise<Record<string, unknown>> {
+async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
   try {
+    const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs)))]): AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs)));
     const response = await fetch(engineUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: filePath }),
-      signal: AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs))),
+      signal: requestSignal,
     });
     const responseText = await response.text();
     let body: Record<string, unknown>;
@@ -432,11 +438,14 @@ async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | 
       throw new Error(`Engine returned an invalid response (${response.status}): ${detail}`);
     }
     if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
     await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder");
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
     notifyAnalysis(body);
     return body;
   } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw new Error("Local analysis timed out after 2 minutes; the file was skipped.");
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
+    if (error instanceof Error && error.name === "TimeoutError") throw new Error("Local analysis timed out after 2 minutes; the file was skipped.");
     throw error;
   }
 }
@@ -574,9 +583,8 @@ function showNotification(settings: Record<string, unknown>, title: string, body
 function notifyAnalysis(body: Record<string, unknown>): void {
   const settings = backgroundService?.snapshot().settings;
   if (!settings) return;
-  const riskScore = typeof body.riskScore === "number" ? body.riskScore : 0;
-  const enabled = riskScore >= 61 ? settings.notifyHighRisk === true : riskScore >= 26 ? settings.notifyMediumRisk === true : settings.notifySafeScan === true;
-  if (enabled) showNotification(settings, riskScore >= 61 ? "viAI high-risk evidence" : "viAI scan complete", `Local static analysis returned risk score ${riskScore}.`);
+  const notification = notificationForAnalysis(body);
+  if (settings[notification.setting] === true) showNotification(settings, notification.title, notification.body);
 }
 
 async function recordDeviceEvents(snapshot: DeviceSecuritySnapshot, events: readonly DeviceSecuritySnapshot["history"][number][]): Promise<void> {
@@ -644,14 +652,22 @@ function disposeMainResources(): void {
 }
 }
 
-function streamCandidates(roots: string[], includeAllFiles: boolean, onBatch: (files: string[]) => Promise<void>): Promise<void> {
+function abortError(): Error {
+  const error = new Error("Scan cancelled");
+  error.name = "AbortError";
+  return error;
+}
+
+function streamCandidates(roots: string[], includeAllFiles: boolean, controller: ScanController | undefined, onBatch: (files: string[]) => Promise<void>): Promise<void> {
   return new Promise((resolve) => {
+    const signal = controller?.signal;
     const workers = roots.map((root) => new Worker(join(__dirname, "scanWorker.js"), { workerData: { root, includeAllFiles } }));
     let completed = 0;
     let pending: string[] = [];
     let delivery = Promise.resolve();
     let queuedBatches = 0;
     let paused = false;
+    let finished = false;
     const pauseLimit = 8;
     const resumeLimit = 3;
     const setPaused = (next: boolean) => {
@@ -659,21 +675,28 @@ function streamCandidates(roots: string[], includeAllFiles: boolean, onBatch: (f
       paused = next;
       for (const worker of workers) worker.postMessage(next ? "pause" : "resume");
     };
+    const syncPause = () => setPaused(controller?.state !== "running" || queuedBatches >= pauseLimit);
     const flush = () => {
+      if (signal?.aborted) return;
       if (pending.length === 0) return;
       const batch = pending;
       pending = [];
       queuedBatches += 1;
-      if (queuedBatches >= pauseLimit) setPaused(true);
-      delivery = delivery.then(() => onBatch(batch)).finally(() => {
+      syncPause();
+      delivery = delivery.then(() => signal?.aborted ? undefined : onBatch(batch)).finally(() => {
         queuedBatches -= 1;
-        if (paused && queuedBatches <= resumeLimit) setPaused(false);
+        if (paused && queuedBatches <= resumeLimit) syncPause();
       });
     };
-    const finish = () => { flush(); void delivery.finally(resolve); };
+    const unsubscribe = controller?.onStateChange(syncPause);
+    const finish = () => { if (finished) return; finished = true; signal?.removeEventListener("abort", abort); unsubscribe?.(); flush(); void delivery.finally(resolve); };
+    const abort = () => { workers.forEach((worker) => void worker.terminate()); finish(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    syncPause();
     if (workers.length === 0) finish();
     for (const worker of workers) {
       worker.on("message", (filePath: string) => {
+        if (signal?.aborted || finished) return;
         pending.push(filePath);
         if (pending.length >= 64) flush();
       });

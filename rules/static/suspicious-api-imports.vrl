@@ -1,7 +1,7 @@
-rule SuspiciousApiImports
+rule ProcessInjectionCapabilityChain
 
 when
-pe.suspiciousImportCount >= 2
+pe.processInjectionCapabilityChain
 
 score
 30
@@ -9,8 +9,14 @@ score
 severity
 high
 
+category
+process-access
+
+strength
+moderate
+
 recommendation
-SANDBOX
+DYNAMIC_ANALYSIS
 
 evidence
-"Multiple security-relevant API imports were found."
+"Static imports form a process-injection capability chain; runtime behavior has not been observed."

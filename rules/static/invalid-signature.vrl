@@ -9,6 +9,12 @@ score
 severity
 high
 
+category
+signature
+
+strength
+strong
+
 recommendation
 AI_ANALYSIS
 

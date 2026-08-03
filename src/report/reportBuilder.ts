@@ -1,5 +1,6 @@
 import type { StaticAnalysisReport } from "../../packages/core/src/rules/index.js";
 import type { EvidenceStore, FileSystemEvidence, PackerFinding, PeMetadata, ProfessionalReport, RiskLevel, SignatureStatus, TrustLevel } from "../types.js";
+import type { BaselineEvaluation } from "../baseline/localBaselineStore.js";
 
 export interface ReportBuilderInput {
   fileName: string;
@@ -12,12 +13,14 @@ export interface ReportBuilderInput {
   peMetadata: PeMetadata;
   fileSystemEvidence: FileSystemEvidence;
   staticAnalysisReport: StaticAnalysisReport;
+  baseline?: BaselineEvaluation;
+  versions?: { engineVersion: string; ruleSetVersion: string; trustPolicyVersion: string };
 }
 
 export class ReportBuilder {
-  buildFromEvidence(evidence: EvidenceStore, riskLevel: RiskLevel, staticAnalysisReport: StaticAnalysisReport): ProfessionalReport {
+  buildFromEvidence(evidence: EvidenceStore, riskLevel: RiskLevel, staticAnalysisReport: StaticAnalysisReport, baseline?: BaselineEvaluation, versions?: ReportBuilderInput["versions"]): ProfessionalReport {
     const signature = requireEvidence(evidence.signature, "signature");
-    return this.build({ fileName: evidence.file.name, fileType: evidence.portableExecutable?.isPe ? "Windows Portable Executable" : evidence.file.fileType ?? "unknown", riskLevel, signatureStatus: signature.status, signaturePublisher: signature.publisher, entropy: requireEvidence(evidence.entropy, "entropy"), packer: requireEvidence(evidence.packer, "packer evidence"), peMetadata: requireEvidence(evidence.portableExecutable, "Portable Executable metadata"), fileSystemEvidence: requireEvidence(evidence.fileSystem, "filesystem evidence"), staticAnalysisReport });
+    return this.build({ fileName: evidence.file.name, fileType: evidence.portableExecutable?.isPe ? "Windows Portable Executable" : evidence.file.fileType ?? "unknown", riskLevel, signatureStatus: signature.status, signaturePublisher: signature.publisher, entropy: requireEvidence(evidence.entropy, "entropy"), packer: requireEvidence(evidence.packer, "packer evidence"), peMetadata: requireEvidence(evidence.portableExecutable, "Portable Executable metadata"), fileSystemEvidence: requireEvidence(evidence.fileSystem, "filesystem evidence"), staticAnalysisReport, baseline, versions });
   }
 
   build(input: ReportBuilderInput): ProfessionalReport {
@@ -40,7 +43,7 @@ export class ReportBuilder {
     if (input.packer.detected) warnings.push(...input.packer.reasons);
     if (input.fileSystemEvidence.zoneIdentifier) warnings.push(`Windows Zone.Identifier: ${input.fileSystemEvidence.zoneIdentifier.zoneName}.`);
     return {
-      schemaVersion: "0.2",
+      schemaVersion: "0.3",
       summary: executiveSummary(input),
       trust: { score: input.staticAnalysisReport.trustScore, level: trustLevel(input.staticAnalysisReport.trustScore), indicators: trustIndicators },
       risk: { score: input.staticAnalysisReport.riskScore, level: input.riskLevel, breakdown: riskBreakdown },
@@ -49,6 +52,10 @@ export class ReportBuilder {
       indicators: [...input.staticAnalysisReport.indicators],
       warnings: [...new Set(warnings)],
       fileSystem: input.fileSystemEvidence,
+      assessment: input.staticAnalysisReport.assessment,
+      correlations: input.staticAnalysisReport.correlations,
+      baseline: input.baseline ? { state: input.baseline.state } : undefined,
+      analysisMetadata: { engineVersion: input.versions?.engineVersion ?? "0.3.5", ruleSetVersion: input.versions?.ruleSetVersion ?? "0.3", trustPolicyVersion: input.versions?.trustPolicyVersion ?? "0.3", assessmentSchemaVersion: "0.3" },
     };
   }
 }
@@ -77,7 +84,7 @@ function executiveSummary(input: ReportBuilderInput): string {
   const signature = input.signatureStatus === "trusted" ? `It has a valid local signature${input.signaturePublisher ? ` from ${input.signaturePublisher}` : ""}.` : input.signatureStatus === "missing" ? "It is unsigned." : "Its signature could not be established as trusted.";
   const structure = input.peMetadata.isPe ? "Portable Executable metadata was inspected." : `${input.fileType} structure was inspected where available.`;
   const packing = input.packer.detected ? "Packing indicators were observed." : "No supported packing indicators were observed.";
-  return `${input.fileName} received a ${input.riskLevel} static-analysis risk score. ${signature} ${structure} ${packing} viAI recommends ${input.staticAnalysisReport.recommendation} as the next action; static analysis does not determine intent.`;
+  return `${input.fileName} has a ${input.staticAnalysisReport.assessment.verdict} static assessment with ${input.staticAnalysisReport.assessment.confidence.level} evidence confidence. ${signature} ${structure} ${packing} viAI recommends ${input.staticAnalysisReport.assessment.recommendation} as the next action; static analysis does not determine intent.`;
 }
 
 function requireEvidence<T>(value: T | undefined, label: string): T {

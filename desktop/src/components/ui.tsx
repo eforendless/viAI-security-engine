@@ -6,7 +6,7 @@ import type { RiskLevel } from "../types";
 import { LoadingScreen } from "./LoadingScreen";
 
 export function Panel({ children, className = "" }: PropsWithChildren<{ className?: string }>) {
-  return <motion.section initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} whileHover={{ scale: 1.01 }} transition={{ duration: 0.2 }} className={`panel ${className}`}>{children}</motion.section>;
+  return <motion.section className={`panel ${className}`}>{children}</motion.section>;
 }
 
 export function Button({ children, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {

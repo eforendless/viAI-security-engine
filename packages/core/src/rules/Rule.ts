@@ -1,5 +1,6 @@
 import type { RuleContext } from "./RuleContext.js";
 import type { Recommendation, RuleResult, RuleSeverity } from "./RuleResult.js";
+import type { EvidenceCategory, EvidenceStrength } from "./RuleResult.js";
 
 export interface SourceSpan {
   readonly line: number;
@@ -29,6 +30,9 @@ export interface ParsedRule {
   readonly severity: RuleSeverity;
   readonly recommendation?: Recommendation;
   readonly evidence: string;
+  readonly category?: EvidenceCategory;
+  readonly strength?: EvidenceStrength;
+  readonly correlationGroup?: string;
   readonly origin: RuleOrigin;
 }
 

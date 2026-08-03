@@ -8,7 +8,7 @@ export interface VrlToken {
   readonly span: SourceSpan;
 }
 
-const keywords = new Set(["rule", "description", "when", "score", "severity", "recommendation", "evidence", "and", "or", "contains", "true", "false"]);
+const keywords = new Set(["rule", "description", "when", "score", "severity", "recommendation", "evidence", "category", "strength", "correlationGroup", "and", "or", "contains", "true", "false"]);
 
 export class VrlLexer {
   lex(source: string): VrlToken[] {

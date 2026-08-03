@@ -4,7 +4,7 @@ export class IntegrationCoordinator {
   constructor(private readonly sandboxClient?: SandboxClient, private readonly investigationClient?: InvestigationClient) {}
 
   async handoff(analysis: AnalysisResult): Promise<void> {
-    if (analysis.riskLevel !== "high") return;
+    if (analysis.report.assessment?.recommendation !== "DYNAMIC_ANALYSIS") return;
     await this.sandboxClient?.submit({ analysis, requestedAt: new Date().toISOString() });
   }
 

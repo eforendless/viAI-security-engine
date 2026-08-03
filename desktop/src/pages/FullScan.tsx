@@ -15,25 +15,30 @@ export default function FullScan() {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { if (!scan.active) return; const timer = window.setInterval(() => setNow(Date.now()), 1_000); return () => window.clearInterval(timer); }, [scan.active]);
   const progress = scan.total ? (scan.completed / scan.total) * 100 : 0;
-  const elapsed = scan.startedAt ? Math.max(0, now - scan.startedAt - (scan.pausedDurationMs ?? 0)) : 0;
+  const elapsed = scan.startedAt ? Math.max(0, now - scan.startedAt - (scan.pausedDurationMs ?? 0) - (scan.pausedAt ? Math.max(0, now - scan.pausedAt) : 0)) : 0;
   const cacheTotal = (scan.cacheHits ?? 0) + (scan.cacheMisses ?? 0);
   const cacheHitRate = cacheTotal ? `${Math.round(((scan.cacheHits ?? 0) / cacheTotal) * 100)}%` : "-";
   const remaining = scan.total ? Math.max(0, scan.total - scan.completed) : 0;
+  const isPausing = scan.status === "pausing";
+  const isPaused = scan.status === "paused";
+  const isResuming = scan.status === "resuming";
+  const isCancelling = scan.status === "cancelling";
+  const scanState = isCancelling ? "Cancelling scan" : isPausing ? "Pausing scan" : isPaused ? "Scan paused" : isResuming ? "Resuming scan" : scan.cancelled ? "Scan cancelled" : scan.active ? "Local engine is analyzing" : "Ready when you are";
   return <motion.div {...pageMotion} className="page-stack">
     <div className="page-title split-title">
       <div><p className="eyebrow">SYSTEM-WIDE REVIEW</p><h2>Full system scan</h2><p>{performanceDescription(performanceMode)}</p></div>
       {!scan.active && <Button className="primary" onClick={() => void fullScan()}><Play size={17} />Scan entire computer</Button>}
     </div>
     <Panel className="full-scan-panel">
-      <Radar progress={progress} active={scan.active && !scan.paused} />
+      <Radar progress={progress} active={scan.active && !isPaused && !isPausing && !isCancelling} />
       <div className="scan-center">
-        <div className="scan-state"><span className={scan.active ? "pulse-dot" : "status-dot"} />{scan.active ? scan.paused ? "Scan paused" : "Local engine is analyzing" : "Ready when you are"}</div>
+        <div className="scan-state"><span className={scan.active && !isPaused && !isCancelling ? "pulse-dot" : "status-dot"} />{scanState}</div>
         <h3>{scan.currentPath || "System locations are ready for review"}</h3>
         <p>{scan.stage ?? (scan.active ? "Analysis continues independently from this window." : performanceDescription(performanceMode))}</p>
-        <div className="progress-track"><motion.span animate={{ width: `${progress}%` }} transition={{ ease: "easeOut" }} /></div>
+        <div className="progress-track"><motion.span animate={{ scaleX: progress / 100 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} /></div>
         <div className="scan-stats"><span><strong>{scan.completed.toLocaleString()}</strong> files scanned</span><span><strong>{scan.investigationCount}</strong> need investigation</span><span><strong>{remaining.toLocaleString()}</strong> remaining</span></div>
         <div className="scan-controls">
-          {scan.active ? <><Button onClick={() => void (scan.paused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{scan.paused ? <Play size={16} /> : <Pause size={16} />}{scan.paused ? "Resume" : "Pause"}</Button><Button className="danger" onClick={() => void window.viai?.scans.cancel()}><Square size={15} />Cancel scan</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />Start full scan</Button>}
+          {scan.active ? <>{!isCancelling && <Button disabled={isPausing || isResuming} onClick={() => void (isPaused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{isPaused ? <Play size={16} /> : <Pause size={16} />}{isPaused ? "Resume" : isPausing ? "Pausing..." : isResuming ? "Resuming..." : "Pause"}</Button>}<Button className="danger" disabled={isCancelling} onClick={() => void window.viai?.scans.cancel()}><Square size={15} />{isCancelling ? "Cancelling..." : "Cancel scan"}</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />Start full scan</Button>}
         </div>
       </div>
     </Panel>

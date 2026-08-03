@@ -1,5 +1,6 @@
 import type { RuleContext, SourceKind } from "../../packages/core/src/rules/index.js";
 import type { AnalysisResult, EvidenceStore, PackerFinding, PeMetadata, ReputationResult, SignatureStatus } from "../types.js";
+import type { BaselineEvaluation } from "../baseline/localBaselineStore.js";
 
 interface ContextInput {
   filePath: string;
@@ -36,6 +37,7 @@ export function createRuleContext(input: ContextInput, reputation: ReputationRes
       imports: input.peMetadata.imports,
       suspiciousImports: input.peMetadata.suspiciousImports,
       suspiciousImportCount: input.peMetadata.suspiciousImports.length,
+      processInjectionCapabilityChain: hasProcessInjectionCapabilityChain(input.peMetadata.imports),
       packerDetected: input.packer.detected,
     },
     source: { kind: sourceKind, isDownload: sourceKind === "download" || /[\\/]downloads([\\/]|$)/i.test(input.filePath) },
@@ -43,14 +45,22 @@ export function createRuleContext(input: ContextInput, reputation: ReputationRes
   };
 }
 
-export function createRuleContextFromEvidence(evidence: EvidenceStore, reputation: ReputationResult): RuleContext {
+export function createRuleContextFromEvidence(evidence: EvidenceStore, reputation: ReputationResult, baseline?: BaselineEvaluation): RuleContext {
   const hashes = requireEvidence(evidence.hashes, "hashes");
   const metadata = requireEvidence(evidence.metadata, "metadata");
   const signature = requireEvidence(evidence.signature, "signature");
   const entropy = requireEvidence(evidence.entropy, "entropy");
   const packer = requireEvidence(evidence.packer, "packer evidence");
   const peMetadata = requireEvidence(evidence.portableExecutable, "Portable Executable metadata");
-  return createRuleContext({ filePath: evidence.file.path, hashes, metadata, entropy, signatureStatus: signature.status, signaturePublisher: signature.publisher, packer, peMetadata }, reputation, evidence.file.source);
+  return { ...createRuleContext({ filePath: evidence.file.path, hashes, metadata, entropy, signatureStatus: signature.status, signaturePublisher: signature.publisher, packer, peMetadata }, reputation, evidence.file.source), baseline: baseline ? { state: baseline.state } : undefined };
+}
+
+function hasProcessInjectionCapabilityChain(imports: readonly string[]): boolean {
+  const apiNames = new Set(imports.map((entry) => entry.split("!").at(-1)?.toLocaleLowerCase()));
+  return apiNames.has("openprocess")
+    && apiNames.has("virtualallocex")
+    && apiNames.has("writeprocessmemory")
+    && apiNames.has("createremotethread");
 }
 
 function requireEvidence<T>(value: T | undefined, label: string): T {

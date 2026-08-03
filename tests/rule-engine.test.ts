@@ -28,7 +28,7 @@ test("rule engine recursively loads compiled VRL and aggregates evidence", async
     const report = engine.evaluate(context, { path: "sample.exe" });
     assert.equal(engine.ruleCount(), 1);
     assert.equal(report.riskScore, 30);
-    assert.equal(report.recommendation, "SANDBOX");
+    assert.equal(report.recommendation, "DYNAMIC_ANALYSIS");
     assert.deepEqual(report.indicators, ["Unsigned executable from downloads."]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

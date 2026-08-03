@@ -1,6 +1,9 @@
 import type { StaticAnalysisReport } from "../packages/core/src/rules/index.js";
+import type { StaticAssessment } from "../packages/core/src/rules/RuleResult.js";
+import type { BaselineEvaluation } from "./baseline/localBaselineStore.js";
 
 export type SignatureStatus = "trusted" | "unknown" | "invalid" | "missing";
+export type SignatureVerificationState = "signed-trusted" | "signed-valid" | "signed-untrusted" | "signed-expired" | "signed-revoked" | "signed-self-signed" | "unsigned" | "verification-unavailable" | "verification-error";
 export type RiskLevel = "low" | "medium" | "high";
 export type InvestigationDecision = "no_further_investigation" | "investigate" | "investigate_urgent";
 export type KnownStatus = "trusted" | "suspicious" | "unknown";
@@ -75,6 +78,7 @@ export interface EvidenceStore {
 }
 
 export interface DigitalSignatureDetails {
+  verificationState: SignatureVerificationState;
   present: boolean;
   valid: boolean;
   trusted: boolean;
@@ -83,10 +87,12 @@ export interface DigitalSignatureDetails {
   publisher?: string;
   certificateSubject?: string;
   certificateIssuer?: string;
+  certificateThumbprint?: string;
   certificateExpiresAt?: string;
   timestamped: boolean;
   revoked: boolean;
   selfSigned: boolean;
+  verificationError?: string;
 }
 
 export interface PeSection {
@@ -101,8 +107,25 @@ export interface PeSection {
   executable: boolean;
 }
 
+export type PeParseStatus = "valid" | "partial" | "malformed" | "unsupported" | "not-pe";
+
+export interface PeParseWarning {
+  code: string;
+  severity: "warning" | "info";
+  message: string;
+}
+
+export interface PeDirectorySummary {
+  present: boolean;
+  valid: boolean;
+  size?: number;
+  location: "rva" | "file-offset";
+  status: "not-present" | "resolved" | "virtual-only" | "unmapped" | "out-of-bounds" | "truncated";
+}
+
 export interface PeMetadata {
   isPe: boolean;
+  parseStatus?: PeParseStatus;
   machine?: string;
   compilationTimestamp?: string;
   entryPointRva?: number;
@@ -112,6 +135,15 @@ export interface PeMetadata {
   checksum?: number;
   sizeOfImage?: number;
   overlaySize?: number;
+  directories?: {
+    exports: PeDirectorySummary;
+    imports: PeDirectorySummary;
+    resources: PeDirectorySummary;
+    security: PeDirectorySummary;
+    debug: PeDirectorySummary;
+    relocations: PeDirectorySummary;
+    clr: PeDirectorySummary;
+  };
   clrPresent?: boolean;
   numberOfSections?: number;
   sections: PeSection[];
@@ -119,6 +151,7 @@ export interface PeMetadata {
   suspiciousImports: string[];
   exportsPresent?: boolean;
   parseWarnings: string[];
+  structuredWarnings?: PeParseWarning[];
 }
 
 export interface PackerFinding {
@@ -158,7 +191,7 @@ export interface ScoreBreakdownItem {
 }
 
 export interface ProfessionalReport {
-  schemaVersion: "0.2";
+  schemaVersion: "0.2" | "0.3";
   summary: string;
   trust: { score: number; level: TrustLevel; indicators: Array<{ id: string; category: string; weight: number; impact: "positive" | "negative"; reason: string }> };
   risk: { score: number; level: RiskLevel; breakdown: ScoreBreakdownItem[] };
@@ -167,6 +200,10 @@ export interface ProfessionalReport {
   indicators: string[];
   warnings: string[];
   fileSystem: FileSystemEvidence;
+  assessment?: StaticAssessment;
+  correlations?: StaticAnalysisReport["correlations"];
+  baseline?: { state: "new" | "unchanged" | "changed" | "signer-changed" | "signature-changed" };
+  analysisMetadata?: { engineVersion: string; ruleSetVersion: string; trustPolicyVersion: string; assessmentSchemaVersion: "0.3" };
 }
 
 export interface AnalysisResult {
@@ -195,6 +232,7 @@ export interface AnalysisResult {
   heuristicFindings: HeuristicFinding[];
   staticAnalysisReport: StaticAnalysisReport;
   report: ProfessionalReport;
+  baseline?: BaselineEvaluation;
   evidenceStore?: EvidenceStore;
 }
 

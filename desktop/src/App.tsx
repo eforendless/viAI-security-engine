@@ -119,27 +119,37 @@ export function LegacyApp() {
   )
 }
 
-import { lazy, Suspense, useEffect } from "react";
-import { AnimatePresence } from "framer-motion";
+import { lazy, useEffect } from "react";
 import { HashRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import "./experience.css";
 import { getMonitoringStatus, probeEngine } from "./api/engineClient";
 import { AppShell } from "./layout/AppShell";
-import { LoadingState } from "./components/ui";
 import { useSecurityStore } from "./store/securityStore";
 
-const Dashboard = lazy(() => import("./pages/DashboardLive"));
-const QuickScan = lazy(() => import("./pages/QuickScan"));
-const FullScan = lazy(() => import("./pages/FullScan"));
-const Realtime = lazy(() => import("./pages/Realtime"));
-const History = lazy(() => import("./pages/History"));
-const FileDetails = lazy(() => import("./pages/FileDetails"));
-const Settings = lazy(() => import("./pages/Settings"));
-const About = lazy(() => import("./pages/About"));
-const DeviceSecurity = lazy(() => import("./pages/DeviceSecurity"));
-const Legal = lazy(() => import("./pages/Legal"));
-const LoadingPreview = lazy(() => import("./pages/LoadingPreview"));
+const loadDashboard = () => import("./pages/DashboardLive");
+const loadQuickScan = () => import("./pages/QuickScan");
+const loadFullScan = () => import("./pages/FullScan");
+const loadRealtime = () => import("./pages/Realtime");
+const loadHistory = () => import("./pages/History");
+const loadFileDetails = () => import("./pages/FileDetails");
+const loadSettings = () => import("./pages/Settings");
+const loadAbout = () => import("./pages/About");
+const loadDeviceSecurity = () => import("./pages/DeviceSecurity");
+const loadLegal = () => import("./pages/Legal");
+const loadLoadingPreview = () => import("./pages/LoadingPreview");
+
+const Dashboard = lazy(loadDashboard);
+const QuickScan = lazy(loadQuickScan);
+const FullScan = lazy(loadFullScan);
+const Realtime = lazy(loadRealtime);
+const History = lazy(loadHistory);
+const FileDetails = lazy(loadFileDetails);
+const Settings = lazy(loadSettings);
+const About = lazy(loadAbout);
+const DeviceSecurity = lazy(loadDeviceSecurity);
+const Legal = lazy(loadLegal);
+const LoadingPreview = lazy(loadLoadingPreview);
 
 function AppRoutes() {
   const location = useLocation();
@@ -183,7 +193,12 @@ function AppRoutes() {
   useEffect(() => window.viai?.background.onCommand((command) => {
     navigate(command === "quick-scan" ? "/quick-scan" : command === "realtime" ? "/realtime" : command === "history" ? "/history" : "/settings");
   }), [navigate]);
-  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><LoadingState title="Loading security center" detail="Preparing the local workspace." /></div>}><Routes location={location} key={location.pathname}><Route path="/loading-preview" element={<LoadingPreview />} /><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /><Route path="/legal/terms" element={<Legal document="terms" />} /><Route path="/legal/privacy" element={<Legal document="privacy" />} /></Route></Routes></Suspense></AnimatePresence>;
+  useEffect(() => {
+    const preload = () => { void loadQuickScan(); void loadFullScan(); void loadRealtime(); void loadHistory(); void loadDeviceSecurity(); };
+    const timer = window.setTimeout(preload, 700);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return <Routes location={location}><Route path="/loading-preview" element={<LoadingPreview />} /><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /><Route path="/legal/terms" element={<Legal document="terms" />} /><Route path="/legal/privacy" element={<Legal document="privacy" />} /></Route></Routes>;
 }
 
 function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif" } }} /></HashRouter>; }

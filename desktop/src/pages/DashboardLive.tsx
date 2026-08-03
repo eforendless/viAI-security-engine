@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { pageMotion } from "../animations/motion";
 import { useSecurityStore } from "../store/securityStore";
-import { DeviceInformationCard, HardwareCard, ProtectionCard, QuickActions, RecentActivity, ScanQueueCard, SecuritySummary, StatisticsCard, StorageCard, type AnalysisItem, type SystemOverview } from "../components/dashboard/OverviewCards";
+import { DeviceInformationCard, HardwareCard, ProtectionCard, QuickActions, RecentActivity, ScanQueueCard, SecuritySummary, StatisticsCard, StorageCard, needsInvestigation, type AnalysisItem, type SystemOverview } from "../components/dashboard/OverviewCards";
 
 const systemOverviewTimeoutMs = 5_000;
 const DashboardCharts = lazy(() => import("../components/dashboard/DashboardCharts"));
@@ -14,7 +14,7 @@ export default function DashboardLive() {
   const [system, setSystem] = useState<SystemOverview>();
   const [version, setVersion] = useState("Not Available");
   const [query, setQuery] = useState("");
-  const [riskFilter, setRiskFilter] = useState("all");
+  const [assessmentFilter, setAssessmentFilter] = useState("all");
   const deferredQuery = useDeferredValue(query);
 
   useEffect(() => {
@@ -48,16 +48,18 @@ export default function DashboardLive() {
     <Suspense fallback={null}><DashboardCharts activity={aggregates.activity} distribution={aggregates.distribution} /></Suspense>
     <section className="overview-secondary-grid"><StorageCard storage={system?.storage} /><HardwareCard system={system} /><ScanQueueCard scan={scan} /></section>
     <QuickActions onScanFile={() => void startFileScan()} onScanFolder={() => void startFolderScan()} onUpdate={() => void window.viai?.updates.check()} />
-    <RecentActivity items={history as AnalysisItem[]} query={deferredQuery} onQuery={setQuery} riskFilter={riskFilter} onRiskFilter={setRiskFilter} onOpen={(id) => navigate(`/details/${id}`)} />
+    <RecentActivity items={history as AnalysisItem[]} query={deferredQuery} onQuery={setQuery} assessmentFilter={assessmentFilter} onAssessmentFilter={setAssessmentFilter} onOpen={(id) => navigate(`/details/${id}`)} />
   </motion.div>;
 }
 
 function buildAggregates(history: AnalysisItem[], cached: number, activeSkipped: number | undefined, scanActive: boolean) {
   const extensions = { executables: new Set([".exe", ".com", ".scr", ".msi", ".msp", ".appx"]), dlls: new Set([".dll", ".ocx", ".cpl"]), drivers: new Set([".sys", ".drv"]), scripts: new Set([".ps1", ".bat", ".cmd", ".js", ".vbs", ".py", ".hta"]), documents: new Set([".doc", ".docx", ".docm", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".pdf"]), archives: new Set([".zip", ".rar", ".7z", ".tar", ".gz"]), media: new Set([".mp3", ".mp4", ".mkv", ".avi", ".jpg", ".jpeg", ".png", ".gif"]) };
   const count = (group: Set<string>) => history.filter((item) => group.has(item.metadata.extension?.toLowerCase() ?? "")).length;
-  const investigated = history.filter((item) => item.finalRiskScore > 25 || /sandbox|analysis|investigat/i.test(item.recommendation)).length;
-  const stats = { total: history.length, executables: count(extensions.executables), dlls: count(extensions.dlls), drivers: count(extensions.drivers), scripts: count(extensions.scripts), documents: count(extensions.documents), archives: count(extensions.archives), media: count(extensions.media), suspicious: history.filter((item) => item.finalRiskScore > 25).length, investigated, skipped: scanActive ? activeSkipped : undefined, cached };
-  const distribution = [{ name: "Low", value: history.filter((item) => item.finalRiskScore <= 25).length, color: "#3f9d72" }, { name: "Medium", value: history.filter((item) => item.finalRiskScore > 25 && item.finalRiskScore <= 60).length, color: "#d99b31" }, { name: "High", value: history.filter((item) => item.finalRiskScore > 60 && item.finalRiskScore <= 80).length, color: "#d35c63" }, { name: "Critical", value: history.filter((item) => item.finalRiskScore > 80).length, color: "#a83953" }, { name: "Unknown", value: history.filter((item) => !Number.isFinite(item.finalRiskScore)).length, color: "#8291a8" }];
+  const canonical = history.filter((item) => item.assessment);
+  const requiresReview = canonical.filter(needsInvestigation).length;
+  const stats = { total: history.length, executables: count(extensions.executables), dlls: count(extensions.dlls), drivers: count(extensions.drivers), scripts: count(extensions.scripts), documents: count(extensions.documents), archives: count(extensions.archives), media: count(extensions.media), requiresReview, investigated: requiresReview, skipped: scanActive ? activeSkipped : undefined, cached };
+  const verdicts = [{ name: "LIKELY_BENIGN", color: "#3f9d72" }, { name: "SUSPICIOUS", color: "#d99b31" }, { name: "LIKELY_MALICIOUS", color: "#d35c63" }, { name: "MALICIOUS", color: "#a83953" }, { name: "UNKNOWN", color: "#8291a8" }];
+  const distribution = [...verdicts.map(({ name, color }) => ({ name, value: canonical.filter((item) => item.assessment?.verdict === name).length, color })), { name: "LEGACY", value: history.length - canonical.length, color: "#8291a8" }].filter((item) => item.value > 0);
   const activity = Array.from({ length: 30 }, (_, index) => { const date = new Date(); date.setHours(0, 0, 0, 0); date.setDate(date.getDate() - (29 - index)); return { day: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }), value: history.filter((item) => new Date(item.analyzedAt).toDateString() === date.toDateString()).length }; });
   return { stats, distribution, activity };
 }

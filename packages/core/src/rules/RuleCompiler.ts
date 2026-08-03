@@ -7,8 +7,9 @@ type FeatureType = "boolean" | "number" | "string" | "strings";
 const features: Readonly<Record<string, FeatureType>> = {
   "file.hash": "string", "file.name": "string", "file.extension": "string", "file.type": "string", "file.size": "number", "file.isExecutable": "boolean", "file.entropy": "number", "file.containsMacro": "boolean",
   "signature.isSigned": "boolean", "signature.status": "string", "signature.publisher": "string",
-  "pe.isPe": "boolean", "pe.imports": "strings", "pe.suspiciousImports": "strings", "pe.suspiciousImportCount": "number", "pe.packerDetected": "boolean",
+  "pe.isPe": "boolean", "pe.imports": "strings", "pe.suspiciousImports": "strings", "pe.suspiciousImportCount": "number", "pe.processInjectionCapabilityChain": "boolean", "pe.packerDetected": "boolean",
   "source.kind": "string", "source.isDownload": "boolean", "reputation.score": "number", "reputation.knownStatus": "string",
+  "baseline.state": "string",
 };
 
 export class RuleCompiler {
@@ -21,7 +22,7 @@ export class RuleCompiler {
       referencedFeatures,
       evaluate: (context) => {
         const matched = predicate(context);
-        return { id: rule.id, matched, score: matched ? rule.score : 0, severity: rule.severity, evidence: rule.evidence, recommendation: matched ? rule.recommendation : undefined };
+        return { id: rule.id, matched, score: matched ? rule.score : 0, severity: rule.severity, evidence: rule.evidence, ...(matched && rule.recommendation ? { recommendation: rule.recommendation } : {}), ...(rule.category ? { category: rule.category } : {}), ...(rule.strength ? { strength: rule.strength } : {}), ...(rule.correlationGroup ? { correlationGroup: rule.correlationGroup } : {}) };
       },
     };
   }
@@ -53,7 +54,7 @@ export class RuleCompiler {
     const left = this.typeOf(node.left); const right = this.typeOf(node.right); if (!((left === "strings" || left === "string") && right === "string")) throw this.error(node, "contains requires a string or string collection and a string value"); return "boolean";
   }
   private require(node: ExpressionNode, type: FeatureType): void { if (this.typeOf(node) !== type) throw this.error(node, `Expected ${type} expression`); }
-  private valueFor(context: RuleContext, path: string): FeatureValue { const [section, property] = path.split(".") as [keyof RuleContext, string]; return context[section][property as never] as FeatureValue; }
+  private valueFor(context: RuleContext, path: string): FeatureValue { const [section, property] = path.split(".") as [keyof RuleContext, string]; const features = context[section] as Record<string, FeatureValue> | undefined; return features?.[property]; }
   private compare(operator: "==" | "!=" | ">" | ">=" | "<" | "<=", left: boolean | number | string | undefined, right: boolean | number | string | undefined): boolean { if (left === undefined || right === undefined) return false; return operator === "==" ? left === right : operator === "!=" ? left !== right : operator === ">" ? left > right : operator === ">=" ? left >= right : operator === "<" ? left < right : left <= right; }
   private featuresOf(node: ExpressionNode): string[] { if (node.kind === "feature") return [node.path]; if (node.kind === "literal") return []; if (node.kind === "not") return this.featuresOf(node.operand); return [...this.featuresOf(node.left), ...this.featuresOf(node.right)]; }
   private error(node: ExpressionNode, message: string): Error { return new Error(`${message} at ${node.span.line}:${node.span.column}`); }

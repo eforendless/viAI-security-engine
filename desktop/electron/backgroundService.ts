@@ -17,6 +17,8 @@ export interface BackgroundHistoryRecord {
   riskScore?: number;
   trustScore?: number;
   recommendation?: string;
+  assessment?: { schemaVersion: "0.3"; verdict: string; suspicion: { score: number; level: string }; trust: { score: number; level: string }; confidence: { score: number; level: string }; investigationPriority: string; recommendation: string; };
+  baselineState?: string;
   matchedRules?: string[];
   engineVersion: string;
   detail: string;
@@ -28,7 +30,7 @@ export interface BackgroundHistoryRecord {
 }
 export type BackgroundHistorySummary = Omit<BackgroundHistoryRecord, "report">;
 
-export type ScanStatus = "running" | "paused" | "completed" | "cancelled" | "failed";
+export type ScanStatus = "starting" | "running" | "pausing" | "paused" | "resuming" | "cancelling" | "completed" | "cancelled" | "failed";
 
 export interface PersistedScanState {
   id: string;
@@ -61,6 +63,15 @@ export interface PersistedScanState {
   memoryBytes?: number;
   priorityRemaining?: Partial<Record<"critical" | "high" | "medium" | "low" | "inventory", number>>;
   discoveryComplete?: boolean;
+  filesPendingAtCancellation?: number;
+  cancelRequestedAt?: string;
+  schedulerStoppedAt?: string;
+  queueClearedAt?: string;
+  activeWorkersAtCancellation?: number;
+  lastWorkerStoppedAt?: string;
+  cancelledAt?: string;
+  cancelCompletedAt?: string;
+  cancelLatencyMs?: number;
   pendingFiles: string[];
 }
 
@@ -142,7 +153,8 @@ export class BackgroundService {
       const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
-      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
+      const assessment = assessmentSummary(analysis.report?.assessment ?? analysis.staticAnalysisReport?.assessment);
+      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
       if (deferPersistence) {
         this.historyDirty = true;
         this.scheduleHistoryFlush();
@@ -261,7 +273,7 @@ function validateScanCacheEntry(value: unknown): ScanCacheEntry | undefined { if
 function validateScan(value: unknown): PersistedScanState | undefined {
   if (!value || typeof value !== "object") return undefined;
   const scan = value as Partial<PersistedScanState>;
-  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["running", "paused", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
+  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["starting", "running", "pausing", "paused", "resuming", "cancelling", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
   const number = (candidate: unknown, fallback = 0) => typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? candidate : fallback;
   const priorityRemaining = scan.priorityRemaining && typeof scan.priorityRemaining === "object" ? Object.fromEntries(["critical", "high", "medium", "low", "inventory"].map((band) => [band, number((scan.priorityRemaining as Record<string, unknown>)[band])])) : undefined;
   return {
@@ -272,7 +284,7 @@ function validateScan(value: unknown): PersistedScanState | undefined {
     updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(),
     currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "",
     filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined,
-    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, discoveryComplete: scan.discoveryComplete !== false, pendingFiles: [...scan.pendingFiles],
+    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, discoveryComplete: scan.discoveryComplete !== false, filesPendingAtCancellation: number(scan.filesPendingAtCancellation), cancelRequestedAt: typeof scan.cancelRequestedAt === "string" ? scan.cancelRequestedAt : undefined, schedulerStoppedAt: typeof scan.schedulerStoppedAt === "string" ? scan.schedulerStoppedAt : undefined, queueClearedAt: typeof scan.queueClearedAt === "string" ? scan.queueClearedAt : undefined, activeWorkersAtCancellation: number(scan.activeWorkersAtCancellation), lastWorkerStoppedAt: typeof scan.lastWorkerStoppedAt === "string" ? scan.lastWorkerStoppedAt : undefined, cancelledAt: typeof scan.cancelledAt === "string" ? scan.cancelledAt : undefined, cancelCompletedAt: typeof scan.cancelCompletedAt === "string" ? scan.cancelCompletedAt : undefined, cancelLatencyMs: typeof scan.cancelLatencyMs === "number" ? number(scan.cancelLatencyMs) : undefined, pendingFiles: [...scan.pendingFiles],
   };
 }
 function publicScan(scan: PersistedScanState): Omit<PersistedScanState, "pendingFiles"> { const { pendingFiles: _pendingFiles, ...publicState } = scan; return publicState; }
@@ -280,6 +292,21 @@ function historySummary(record: BackgroundHistoryRecord): BackgroundHistorySumma
 function cloneRecord(value: Record<string, any>): Record<string, unknown> { return JSON.parse(JSON.stringify(value)) as Record<string, unknown>; }
 function strings(value: SettingValue | undefined): readonly string[] { return Array.isArray(value) ? value : []; }
 function analysisRecord(value: unknown): Record<string, any> | undefined { return value && typeof value === "object" && "analysis" in value && (value as { analysis?: unknown }).analysis && typeof (value as { analysis: unknown }).analysis === "object" ? (value as { analysis: Record<string, any> }).analysis : undefined; }
+
+function assessmentSummary(value: unknown): BackgroundHistoryRecord["assessment"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const assessment = value as Record<string, unknown>;
+  const component = (name: string): { score: number; level: string } | undefined => {
+    const value = assessment[name];
+    if (!value || typeof value !== "object") return undefined;
+    const component = value as Record<string, unknown>;
+    return typeof component.score === "number" && typeof component.level === "string" ? { score: component.score, level: component.level } : undefined;
+  };
+  const suspicion = component("suspicion");
+  const trust = component("trust");
+  const confidence = component("confidence");
+  return assessment.schemaVersion === "0.3" && typeof assessment.verdict === "string" && typeof assessment.investigationPriority === "string" && typeof assessment.recommendation === "string" && suspicion && trust && confidence ? { schemaVersion: "0.3", verdict: assessment.verdict, suspicion, trust, confidence, investigationPriority: assessment.investigationPriority, recommendation: assessment.recommendation } : undefined;
+}
 
 function monitoredDirectories(settings: BackgroundSettings): string[] {
   return [...new Set([

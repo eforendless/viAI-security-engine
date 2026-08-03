@@ -50,7 +50,17 @@ export interface DeviceScanRecord {
   filesScanned: number;
   threatsFound: number;
   status: "running" | "finished" | "failed";
-  findings: Array<{ filePath: string; riskScore: number; recommendation: string; evidence: string[] }>;
+  findings: Array<{ filePath: string; riskScore: number; recommendation: string; evidence: string[]; assessment?: AssessmentSummary }>;
+}
+
+export interface AssessmentSummary {
+  schemaVersion: "0.3";
+  verdict: string;
+  suspicion: { score: number; level: string };
+  trust: { score: number; level: string };
+  confidence: { score: number; level: string };
+  investigationPriority: string;
+  recommendation: string;
 }
 
 export interface DeviceSecuritySnapshot {
@@ -173,8 +183,8 @@ export class DeviceSecurityService {
         try {
           const result = await analyzeRemovableFile(filePath);
           scan.filesScanned += 1;
-          scan.findings.push({ filePath, riskScore: result.riskScore, recommendation: result.recommendation, evidence: result.evidence });
-          if (result.riskScore >= 61 || result.recommendation === "AI_ANALYSIS") scan.threatsFound += 1;
+          scan.findings.push({ filePath, riskScore: result.riskScore, recommendation: result.recommendation, evidence: result.evidence, assessment: result.assessment });
+          if (needsInvestigation(result)) scan.threatsFound += 1;
         } catch {
           failures += 1;
         }
@@ -382,9 +392,22 @@ async function collectScanTargets(root: string, maximum = 250): Promise<string[]
   return files;
 }
 
-async function analyzeRemovableFile(filePath: string): Promise<{ riskScore: number; recommendation: string; evidence: string[] }> {
+export function needsInvestigation(result: { riskScore: number; recommendation: string; assessment?: AssessmentSummary }): boolean {
+  if (result.assessment) return ["MEDIUM", "HIGH", "URGENT"].includes(result.assessment.investigationPriority) || ["REVIEW", "DYNAMIC_ANALYSIS"].includes(result.assessment.recommendation);
+  return result.riskScore >= 61 || result.recommendation === "AI_ANALYSIS";
+}
+
+async function analyzeRemovableFile(filePath: string): Promise<{ riskScore: number; recommendation: string; evidence: string[]; assessment?: AssessmentSummary }> {
   const response = await fetch("http://127.0.0.1:4117/analyze", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: filePath, source: "removable-media" }) });
-  const result = await response.json() as Partial<{ riskScore: number; recommendation: string; evidence: string[] }>;
+  const result = await response.json() as Partial<{ riskScore: number; recommendation: string; evidence: string[]; assessment: unknown }>;
   if (!response.ok || typeof result.riskScore !== "number" || typeof result.recommendation !== "string" || !Array.isArray(result.evidence)) throw new Error("Local analysis failed");
-  return { riskScore: result.riskScore, recommendation: result.recommendation, evidence: result.evidence };
+  return { riskScore: result.riskScore, recommendation: result.recommendation, evidence: result.evidence, assessment: assessmentFromResponse(result.assessment) };
+}
+
+function assessmentFromResponse(value: unknown): AssessmentSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const assessment = value as Record<string, unknown>;
+  const component = (name: string) => { const value = assessment[name]; return value && typeof value === "object" && typeof (value as Record<string, unknown>).score === "number" && typeof (value as Record<string, unknown>).level === "string" ? { score: (value as Record<string, unknown>).score as number, level: (value as Record<string, unknown>).level as string } : undefined; };
+  const suspicion = component("suspicion"); const trust = component("trust"); const confidence = component("confidence");
+  return assessment.schemaVersion === "0.3" && typeof assessment.verdict === "string" && typeof assessment.investigationPriority === "string" && typeof assessment.recommendation === "string" && suspicion && trust && confidence ? { schemaVersion: "0.3", verdict: assessment.verdict, suspicion, trust, confidence, investigationPriority: assessment.investigationPriority, recommendation: assessment.recommendation } : undefined;
 }

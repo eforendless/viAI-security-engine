@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AnalysisPipeline } from "../core/pipeline.js";
 import type { AnalysisResult, MonitorObservation } from "../types.js";
+import { isAbortError, throwIfAborted } from "../core/cancellation.js";
 
 export interface MonitoringStatus {
   downloadMonitoring: boolean;
@@ -79,11 +80,17 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
       response.writeHead(404).end();
       return;
     }
+    const abortController = new AbortController();
+    const abort = () => abortController.abort();
+    request.once("aborted", abort);
+    response.once("close", () => { if (!response.writableEnded) abort(); });
     try {
       const body = await readJsonBody(request);
       if (typeof body.path !== "string" || body.path.length === 0) throw new Error("'path' must be a non-empty string");
       const source = body.source === "download" || body.source === "filesystem" || body.source === "removable-media" ? body.source : undefined;
-      const analysis = await pipeline.analyze(body.path, source);
+      throwIfAborted(abortController.signal);
+      const analysis = await pipeline.analyze(body.path, source, abortController.signal);
+      throwIfAborted(abortController.signal);
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
         riskScore: analysis.finalRiskScore,
         trustScore: analysis.trustScore,
@@ -93,11 +100,19 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
         decision: analysis.decision,
         recommendation: analysis.recommendation,
         evidence: analysis.evidence,
+        assessment: analysis.report.assessment,
+        analysisMetadata: analysis.report.analysisMetadata,
         staticAnalysisReport: analysis.staticAnalysisReport,
         analysis,
       }));
     } catch (error) {
-      response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : "analysis failed" }));
+      if (isAbortError(error) || abortController.signal.aborted) {
+        if (!response.destroyed) response.destroy();
+      } else {
+        response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : "analysis failed" }));
+      }
+    } finally {
+      request.removeListener("aborted", abort);
     }
   });
 }

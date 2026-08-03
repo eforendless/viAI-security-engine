@@ -6,6 +6,8 @@ export interface DecisionInput {
   readonly overallScore: number;
   readonly confidence: number;
   readonly matchedRules: readonly RuleResult[];
+  readonly hasStrongEvidence?: boolean;
+  readonly hasMeaningfulModerateEvidence?: boolean;
 }
 
 export interface DecisionPolicy {
@@ -22,7 +24,7 @@ const defaultPolicy: DecisionPolicy = {
   monitorRiskMaximum: 60,
 };
 
-const recommendationOrder: Readonly<Record<Recommendation, number>> = { ALLOW: 0, MONITOR: 1, SANDBOX: 2, AI_ANALYSIS: 3 };
+const recommendationOrder: Readonly<Record<Recommendation, number>> = { ALLOW: 0, MONITOR: 1, REVIEW: 2, DYNAMIC_ANALYSIS: 3, SANDBOX: 4, AI_ANALYSIS: 5 };
 
 export class DecisionEngine {
   constructor(private readonly policy: DecisionPolicy = defaultPolicy) {}
@@ -30,15 +32,21 @@ export class DecisionEngine {
   decide(input: DecisionInput): Recommendation {
     const explicit = input.matchedRules.reduce<Recommendation | undefined>((highest, result) => {
       if (!result.recommendation) return highest;
-      return !highest || recommendationOrder[result.recommendation] > recommendationOrder[highest] ? result.recommendation : highest;
+      const recommendation = normalizeRecommendation(result.recommendation);
+      return !highest || recommendationOrder[recommendation] > recommendationOrder[highest] ? recommendation : highest;
     }, undefined);
-    const baseline = input.riskScore > this.policy.monitorRiskMaximum
-      ? "SANDBOX"
+    const meaningfulEvidence = input.hasStrongEvidence === true || input.hasMeaningfulModerateEvidence === true;
+    const baseline = input.riskScore > this.policy.monitorRiskMaximum && meaningfulEvidence
+      ? "DYNAMIC_ANALYSIS"
+      : input.riskScore > this.policy.monitorRiskMaximum
+        ? "REVIEW"
       : input.riskScore <= this.policy.allowRiskMaximum
         ? "ALLOW"
         : input.riskScore <= this.policy.trustedLowRiskMaximum && input.trustScore >= this.policy.minimumTrustForTrustedLowRisk
           ? "ALLOW"
-          : "MONITOR";
+          : input.confidence < 50 ? "REVIEW" : "MONITOR";
     return explicit && recommendationOrder[explicit] > recommendationOrder[baseline] ? explicit : baseline;
   }
 }
+
+function normalizeRecommendation(value: Recommendation): Recommendation { return value === "SANDBOX" || value === "AI_ANALYSIS" ? "DYNAMIC_ANALYSIS" : value; }

@@ -1,4 +1,5 @@
 export type RiskLevel = "low" | "medium" | "high";
+export interface AssessmentSummary { schemaVersion: "0.3"; verdict: string; suspicion: { score: number; level: string }; trust: { score: number; level: string }; confidence: { score: number; level: string }; investigationPriority: string; recommendation: string; }
 
 export interface EngineAnalysis {
   filePath: string;
@@ -20,6 +21,8 @@ export interface EngineAnalysis {
   riskLevel: RiskLevel;
   decision: string;
   recommendation: string;
+  assessment?: AssessmentSummary;
+  baselineState?: string;
   evidence: string[];
 }
 

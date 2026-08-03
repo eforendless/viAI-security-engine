@@ -24,6 +24,7 @@ export interface PeFeatures {
   readonly imports: readonly string[];
   readonly suspiciousImports: readonly string[];
   readonly suspiciousImportCount: number;
+  readonly processInjectionCapabilityChain?: boolean;
   readonly packerDetected: boolean;
 }
 
@@ -37,10 +38,15 @@ export interface ReputationFeatures {
   readonly knownStatus: ReputationState;
 }
 
+export interface BaselineFeatures {
+  readonly state: "new" | "unchanged" | "changed" | "signer-changed" | "signature-changed";
+}
+
 export interface RuleContext {
   readonly file: FileFeatures;
   readonly signature: SignatureFeatures;
   readonly pe: PeFeatures;
   readonly source: SourceFeatures;
   readonly reputation: ReputationFeatures;
+  readonly baseline?: BaselineFeatures;
 }

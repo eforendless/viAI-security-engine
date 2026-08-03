@@ -34,11 +34,10 @@ test("trust assessment combines configured independent positive signals into an 
     version: { companyName: "Contoso", productName: "Contoso App", originalFilename: "contoso.exe", fileVersion: "1.0.0" },
     installationContexts: [{ id: "WINDOWS_INSTALLER", weight: 6, evidence: "Installed by Windows Installer." }],
   });
-  assert.equal(result.trustScore, 75);
+  assert.equal(result.trustScore, 67);
   assert.deepEqual(result.indicators.map((indicator) => indicator.id), [
     "VALID_CERTIFICATE",
     "TRUSTED_PUBLISHER_CONTOSO",
-    "PROGRAM_FILES_LOCATION",
     "CONSISTENT_VERSION_INFORMATION",
     "INSTALLATION_WINDOWS_INSTALLER",
     "TRUSTED_HASH_REPUTATION",
@@ -52,7 +51,7 @@ test("location alone provides limited context and temporary paths do not imply m
   const context = { hash: "hash", signature: { isSigned: false, certificateStatus: "missing" as const } };
   const system32 = await evaluator.evaluate({ ...context, filePath: "C:\\Windows\\System32\\sample.exe" });
   const temporary = await evaluator.evaluate({ ...context, filePath: "C:\\Users\\A\\AppData\\Local\\Temp\\sample.exe" });
-  assert.equal(system32[0]?.weight, 5);
+  assert.deepEqual(system32, []);
   assert.equal(temporary[0]?.weight, -5);
 });
 
@@ -65,8 +64,16 @@ test("trusted publisher identities are loaded from deployable configuration", as
 test("static evidence emits independent weighted trust indicators", async () => {
   const evaluator = new StaticEvidenceTrustEvaluator();
   const indicators = await evaluator.evaluate({ filePath: "C:\\Samples\\tool.exe", hash: "known", signature: { isSigned: false, certificateStatus: "missing" }, staticEvidence: { previouslySeenHash: true, isPe: true, parseWarnings: [], entropy: 5.2, packerDetected: false } });
-  assert.deepEqual(indicators.map((indicator) => indicator.id), ["PREVIOUSLY_SEEN_HASH", "STRUCTURALLY_NORMAL_PE", "UNSIGNED_BINARY"]);
-  assert.equal(indicators.reduce((total, indicator) => total + indicator.weight, 0), 1);
+  assert.deepEqual(indicators.map((indicator) => indicator.id), ["STRUCTURALLY_NORMAL_PE", "UNSIGNED_BINARY"]);
+  assert.equal(indicators.reduce((total, indicator) => total + indicator.weight, 0), -3);
+});
+
+test("unchanged baseline trust requires a trusted signature and system context", async () => {
+  const evaluator = new StaticEvidenceTrustEvaluator();
+  const trusted = await evaluator.evaluate({ filePath: "C:\\Windows\\System32\\driver.sys", hash: "known", signature: { isSigned: true, certificateStatus: "trusted", verificationState: "signed-trusted" }, baseline: { state: "unchanged", systemLocation: true }, staticEvidence: { previouslySeenHash: true, isPe: true, parseWarnings: [], entropy: 5.2, packerDetected: false } });
+  const changed = await evaluator.evaluate({ filePath: "C:\\Windows\\System32\\driver.sys", hash: "changed", signature: { isSigned: false, certificateStatus: "unknown", verificationState: "verification-unavailable" }, baseline: { state: "signer-changed", systemLocation: true }, staticEvidence: { previouslySeenHash: true, isPe: true, parseWarnings: [], entropy: 5.2, packerDetected: false } });
+  assert.ok(trusted.some((indicator) => indicator.id === "UNCHANGED_TRUSTED_SYSTEM_BASELINE" && indicator.weight > 0));
+  assert.ok(changed.some((indicator) => indicator.id === "BASELINE_SIGNER_CHANGED" && indicator.weight < 0));
 });
 
 test("Internet Zone Identifier is a bounded static trust signal", async () => {

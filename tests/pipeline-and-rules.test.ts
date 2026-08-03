@@ -42,12 +42,13 @@ test("pipeline records local evidence and never executes its input", async () =>
     assert.equal(result.fileSystemEvidence.isSymbolicLink, false);
     assert.equal(result.peMetadata.isPe, false);
     assert.equal(result.hashes.sha256.length, 64);
-    assert.ok(result.evidence.length > 0);
+    assert.ok(!result.staticAnalysisReport.matchedRules.some((rule) => rule.id === "UnsignedDownloadExecutable"));
     assert.equal(result.staticAnalysisReport.fileHash, result.hashes.sha256);
     assert.equal(result.trustScore, 30);
-    assert.equal(result.digitalSignature.status, "Unavailable");
+    assert.equal(result.digitalSignature.status, process.platform === "win32" ? "UnknownError" : "Unavailable");
     assert.equal(result.staticAnalysisReport.trustIndicators[0]?.id, "PIPELINE_TRUST");
-    assert.equal(result.report.schemaVersion, "0.2");
+    assert.equal(result.report.schemaVersion, "0.3");
+    assert.equal(result.report.analysisMetadata?.assessmentSchemaVersion, "0.3");
     assert.equal(result.report.trust.score, 30);
     assert.equal(result.report.fileSystem.isHiddenByName, false);
     assert.equal(result.evidenceStore?.processingMetadata.fileReadCount, 1);
@@ -60,6 +61,44 @@ test("pipeline records local evidence and never executes its input", async () =>
     assert.match(html, /Static analysis report/);
     assert.match(html, /Filesystem evidence/);
     assert.match(html, /Entry point/);
+    assert.match(html, /Investigation priority/);
+    assert.match(html, /Analysis versions/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pipeline evaluates and records baseline state independently from reputation history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-baseline-pipeline-"));
+  const inputPath = join(directory, "sample.bin");
+  const reputationDatabasePath = join(directory, "reputation.json");
+  const baselineDatabasePath = join(directory, "baseline.json");
+  const observedStates: Array<string | undefined> = [];
+  try {
+    await writeFile(inputPath, "bounded static baseline fixture");
+    const pipeline = new AnalysisPipeline({
+      rulesDirectory: join(process.cwd(), "rules"),
+      reputationDatabasePath,
+      baselineDatabasePath,
+      trustAssessmentEngine: new TrustAssessmentEngine(new TrustRegistry([{
+        id: "baseline-observer",
+        evaluate: async (context) => {
+          observedStates.push(context.baseline?.state);
+          return [];
+        },
+      }])),
+    });
+    const first = await pipeline.analyze(inputPath);
+    const second = await pipeline.analyze(inputPath);
+    assert.equal(first.baseline?.state, "new");
+    assert.equal(second.baseline?.state, "unchanged");
+    assert.equal(second.report.schemaVersion, "0.3");
+    assert.equal(second.report.assessment?.schemaVersion, "0.3");
+    assert.equal(second.report.baseline?.state, "unchanged");
+    assert.match(new HtmlReportGenerator().generate(second), /Evidence confidence/);
+    assert.deepEqual(observedStates, ["new", "unchanged"]);
+    assert.ok((await readFile(baselineDatabasePath, "utf8")).includes("sample.bin"));
+    assert.ok((await readFile(reputationDatabasePath, "utf8")).includes(first.hashes.sha256));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

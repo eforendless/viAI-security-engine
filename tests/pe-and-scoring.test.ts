@@ -22,8 +22,19 @@ test("PE parser extracts imports and flags security-relevant APIs", () => {
 test("risk aggregation produces investigation routing rather than a malware verdict", () => {
   const report = new RiskAggregator().aggregate("fixture", [{ id: "fixture", matched: true, score: 70, severity: "high", evidence: "fixture evidence", recommendation: "SANDBOX" }], {});
   assert.equal(report.riskScore, 70);
-  assert.equal(report.recommendation, "SANDBOX");
+  assert.equal(report.recommendation, "DYNAMIC_ANALYSIS");
   assert.deepEqual(report.indicators, ["fixture evidence"]);
+});
+
+test("PE parser distinguishes non-PE input and records a partial section table", () => {
+  const nonPe = parsePe(Buffer.from("plain text", "utf8"));
+  assert.equal(nonPe.parseStatus, "not-pe");
+
+  const truncated = createPeFixture().subarray(0, 0x180);
+  const partial = parsePe(truncated);
+  assert.equal(partial.isPe, true);
+  assert.equal(partial.parseStatus, "partial");
+  assert.ok(partial.parseWarnings.some((warning) => /section table/i.test(warning)));
 });
 
 function createPeFixture(): Buffer {
@@ -44,7 +55,9 @@ function createPeFixture(): Buffer {
   file.writeUInt16LE(0x140, 0x98 + 70);
   file.writeUInt32LE(16, 0x98 + 92);
   file.writeUInt32LE(0x1000, 0x98 + 96 + 8);
+  file.writeUInt32LE(0x40, 0x98 + 96 + 12);
   file.writeUInt32LE(0x1100, 0x98 + 96 + 14 * 8);
+  file.writeUInt32LE(0x48, 0x98 + 96 + 14 * 8 + 4);
   const section = 0x178;
   file.write(".text", section);
   file.writeUInt32LE(0x200, section + 8);

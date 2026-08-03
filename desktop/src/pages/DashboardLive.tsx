@@ -1,17 +1,17 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { pageMotion } from "../animations/motion";
 import { useSecurityStore } from "../store/securityStore";
-import { ActivityCard, DeviceInformationCard, HardwareCard, ProtectionCard, QuickActions, RecentActivity, RiskDistributionCard, ScanQueueCard, SecuritySummary, StatisticsCard, StorageCard, type AnalysisItem, type SystemOverview } from "../components/dashboard/OverviewCards";
-import { LoadingScreen } from "../components/LoadingScreen";
+import { DeviceInformationCard, HardwareCard, ProtectionCard, QuickActions, RecentActivity, ScanQueueCard, SecuritySummary, StatisticsCard, StorageCard, type AnalysisItem, type SystemOverview } from "../components/dashboard/OverviewCards";
+
+const systemOverviewTimeoutMs = 5_000;
+const DashboardCharts = lazy(() => import("../components/dashboard/DashboardCharts"));
 
 export default function DashboardLive() {
   const navigate = useNavigate();
   const { history, scan, engineOnline, cacheEntries, downloadMonitoring, usbMonitoring, executableMonitoring } = useSecurityStore();
   const [system, setSystem] = useState<SystemOverview>();
-  const [systemLoaded, setSystemLoaded] = useState(false);
-  const [showLoader, setShowLoader] = useState(true);
   const [version, setVersion] = useState("Not Available");
   const [query, setQuery] = useState("");
   const [riskFilter, setRiskFilter] = useState("all");
@@ -20,20 +20,19 @@ export default function DashboardLive() {
   useEffect(() => {
     let active = true;
     const refresh = async () => {
-      try { const overview = await window.viai?.system.overview(); if (active && overview) setSystem(overview as SystemOverview); } catch { /* Unavailable system details remain explicitly unavailable. */ }
-      finally { if (active) setSystemLoaded(true); }
+      try {
+        const overview = await Promise.race([
+          window.viai?.system.overview(),
+          new Promise<undefined>((resolve) => window.setTimeout(resolve, systemOverviewTimeoutMs)),
+        ]);
+        if (active && overview) setSystem(overview as SystemOverview);
+      } catch { /* Unavailable system details remain explicitly unavailable. */ }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 15_000);
+    const timer = window.setInterval(() => void refresh(), 60_000);
     void window.viai?.application.version().then((next) => { if (active) setVersion(next); });
     return () => { active = false; window.clearInterval(timer); };
   }, []);
-
-  useEffect(() => {
-    if (!systemLoaded) return;
-    const timer = window.setTimeout(() => setShowLoader(false), 340);
-    return () => window.clearTimeout(timer);
-  }, [systemLoaded]);
 
   const aggregates = useMemo(() => buildAggregates(history as AnalysisItem[], cacheEntries, scan.cacheSkipped, scan.active), [history, cacheEntries, scan.cacheSkipped, scan.active]);
   const latest = history[0] as AnalysisItem | undefined;
@@ -41,14 +40,12 @@ export default function DashboardLive() {
   const startFileScan = async () => { const path = await window.viai?.chooseFile(); if (path) await window.viai?.scans.start("quick", path); };
   const startFolderScan = async () => { const path = await window.viai?.chooseFolder(); if (path) await window.viai?.scans.start("folder", path); };
 
-  if (showLoader) return <motion.div {...pageMotion} className="dashboard-loading"><LoadingScreen title="Loading device security overview" detail="Retrieving local device, storage, and hardware information." completing={systemLoaded} /></motion.div>;
-
   return <motion.div {...pageMotion} className="page-stack security-overview-page">
     <header className="security-overview-heading"><div><p className="eyebrow">LOCAL SECURITY CONTROL CENTER</p><h2>Security Overview</h2><p>Offline endpoint visibility, local evidence, and practical next actions for this computer.</p></div><span className={protectionActive ? "overview-status healthy" : "overview-status warning"}>{protectionActive ? "Protection active" : "Protection needs review"}</span></header>
     <SecuritySummary active={protectionActive} investigations={aggregates.stats.investigated} lastScan={latest?.analyzedAt} />
     <section className="overview-primary-grid"><DeviceInformationCard system={system} /><ProtectionCard engineOnline={engineOnline} protectionEnabled={protectionActive} version={version} lastScan={latest?.analyzedAt} /></section>
     <StatisticsCard stats={aggregates.stats} />
-    <section className="overview-chart-grid"><ActivityCard activity={aggregates.activity} /><RiskDistributionCard values={aggregates.distribution} /></section>
+    <Suspense fallback={null}><DashboardCharts activity={aggregates.activity} distribution={aggregates.distribution} /></Suspense>
     <section className="overview-secondary-grid"><StorageCard storage={system?.storage} /><HardwareCard system={system} /><ScanQueueCard scan={scan} /></section>
     <QuickActions onScanFile={() => void startFileScan()} onScanFolder={() => void startFolderScan()} onUpdate={() => void window.viai?.updates.check()} />
     <RecentActivity items={history as AnalysisItem[]} query={deferredQuery} onQuery={setQuery} riskFilter={riskFilter} onRiskFilter={setRiskFilter} onOpen={(id) => navigate(`/details/${id}`)} />

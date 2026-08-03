@@ -17,6 +17,9 @@ export interface SystemOverview {
 
 interface WindowsFacts { edition?: string; version?: string; build?: string; bios?: string; motherboard?: string; gpu?: string; storage?: Array<{ drive?: string; capacity?: number; free?: number; filesystem?: string }>; }
 let previousCpu = cpus();
+let cachedWindowsFacts: { value: WindowsFacts; expiresAt: number } | undefined;
+let windowsFactsInFlight: Promise<WindowsFacts> | undefined;
+const windowsFactsCacheMs = 5 * 60_000;
 
 export async function collectSystemOverview(dataDirectory: string): Promise<SystemOverview> {
   const [deviceId, facts] = await Promise.all([readDeviceId(dataDirectory), windowsFacts()]);
@@ -48,6 +51,16 @@ async function readDeviceId(directory: string): Promise<string> {
 
 async function windowsFacts(): Promise<WindowsFacts> {
   if (process.platform !== "win32") return {};
+  if (cachedWindowsFacts && cachedWindowsFacts.expiresAt > Date.now()) return cachedWindowsFacts.value;
+  if (windowsFactsInFlight) return windowsFactsInFlight;
+  windowsFactsInFlight = collectWindowsFacts().then((value) => {
+    cachedWindowsFacts = { value, expiresAt: Date.now() + windowsFactsCacheMs };
+    return value;
+  }).finally(() => { windowsFactsInFlight = undefined; });
+  return windowsFactsInFlight;
+}
+
+async function collectWindowsFacts(): Promise<WindowsFacts> {
   const script = "$os=Get-CimInstance Win32_OperatingSystem;$bios=Get-CimInstance Win32_BIOS;$board=Get-CimInstance Win32_BaseBoard;$gpu=Get-CimInstance Win32_VideoController | Select-Object -First 1;$edition=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').ProductName;$drives=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {[PSCustomObject]@{drive=$_.DeviceID;capacity=[double]$_.Size;free=[double]$_.FreeSpace;filesystem=$_.FileSystem}};[PSCustomObject]@{edition=$edition;version=$os.Caption;build=$os.BuildNumber;bios=($bios.SMBIOSBIOSVersion);motherboard=(($board.Manufacturer+' '+$board.Product).Trim());gpu=$gpu.Name;storage=@($drives)} | ConvertTo-Json -Depth 4 -Compress";
   try { const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 12_000 }); return JSON.parse(stdout) as WindowsFacts; } catch { return {}; }
 }

@@ -337,7 +337,12 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     files = [target];
   } else if (mode === "folder") {
     if (typeof target !== "string" || !existsSync(target)) throw new Error("Choose an existing folder to scan");
-    files = await collectCandidates([target], 1_000);
+    const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
+    const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
+    const parallel = scanConcurrency(performanceMode, configuredParallel);
+    const scan = await scanService.start(mode, target, [], parallel, false);
+    void streamCandidates([target], false, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).finally(() => scanService?.finishDiscovery(scan.id));
+    return scan;
   } else {
     const home = homedir();
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
@@ -345,7 +350,11 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
     const parallel = scanConcurrency(performanceMode, configuredParallel);
     const scan = await scanService.start(mode, target, [], parallel, false);
-    void streamCandidates(fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync), performanceMode === "deep", (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).finally(() => scanService?.finishDiscovery(scan.id));
+    void (async () => {
+      const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync);
+      await streamCandidates(roots, performanceMode === "deep", (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve());
+      await scanService?.finishDiscovery(scan.id);
+    })();
     return scan;
   }
   const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;

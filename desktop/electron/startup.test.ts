@@ -14,6 +14,7 @@ test("startup pipeline reports weighted progress only after real tasks complete"
   await manager.start();
   assert.deepEqual(work, ["settings", "engine"]);
   assert.deepEqual(events.filter((event) => event.type === "completed").map((event) => event.progress), [25, 100]);
+  assert.doesNotThrow(() => events.forEach((event) => structuredClone(event)));
   assert.equal(events.at(-1)?.type, "ready");
 });
 

@@ -1,8 +1,9 @@
 import { motion } from "framer-motion";
 import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, Info, LoaderCircle } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, Info } from "lucide-react";
 import type { RiskLevel } from "../types";
+import { LoadingScreen } from "./LoadingScreen";
 
 export function Panel({ children, className = "" }: PropsWithChildren<{ className?: string }>) {
   return <motion.section initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} whileHover={{ scale: 1.01 }} transition={{ duration: 0.2 }} className={`panel ${className}`}>{children}</motion.section>;
@@ -41,7 +42,7 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
 export function Skeleton({ className = "" }: { className?: string }) { return <div className={`skeleton ${className}`} aria-hidden="true" />; }
 
 export function LoadingState({ title = "Loading local data", detail = "Retrieving records stored on this device." }: { title?: string; detail?: string }) {
-  return <div className="loading-state" role="status" aria-live="polite"><span className="loading-state-icon"><LoaderCircle size={24} /></span><div><strong>{title}</strong><p>{detail}</p></div></div>;
+  return <LoadingScreen title={title} detail={detail} />;
 }
 
 export function ConfirmDialog({ open, title, detail, confirmLabel, onCancel, onConfirm, children }: { open: boolean; title: string; detail: string; confirmLabel: string; onCancel(): void; onConfirm(): void; children?: ReactNode }) {

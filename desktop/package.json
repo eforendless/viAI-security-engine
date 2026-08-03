@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -26,6 +26,7 @@
     "react-hot-toast": "^2.6.0",
     "react-router-dom": "^7.18.2",
     "recharts": "^3.10.1",
+    "three": "^0.185.1",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -33,6 +34,7 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.185.3",
     "@vitejs/plugin-react": "^6.0.4",
     "autoprefixer": "^10.5.4",
     "concurrently": "^10.0.4",
@@ -58,6 +60,7 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "public/viai-logodone.png",
       "public/icon.ico"
     ],
     "extraResources": [

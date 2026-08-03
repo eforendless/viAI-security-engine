@@ -123,9 +123,10 @@ import { lazy, Suspense, useEffect } from "react";
 import { AnimatePresence } from "framer-motion";
 import { HashRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
-import { getEngineEvents, getMonitoringStatus, probeEngine } from "./api/engineClient";
+import "./experience.css";
+import { getMonitoringStatus, probeEngine } from "./api/engineClient";
 import { AppShell } from "./layout/AppShell";
-import { Skeleton } from "./components/ui";
+import { LoadingState } from "./components/ui";
 import { useSecurityStore } from "./store/securityStore";
 
 const Dashboard = lazy(() => import("./pages/DashboardLive"));
@@ -137,6 +138,8 @@ const FileDetails = lazy(() => import("./pages/FileDetails"));
 const Settings = lazy(() => import("./pages/Settings"));
 const About = lazy(() => import("./pages/About"));
 const DeviceSecurity = lazy(() => import("./pages/DeviceSecurity"));
+const Legal = lazy(() => import("./pages/Legal"));
+const LoadingPreview = lazy(() => import("./pages/LoadingPreview"));
 
 function AppRoutes() {
   const location = useLocation();
@@ -164,12 +167,11 @@ function AppRoutes() {
       if (cancelled) return;
       const store = useSecurityStore.getState();
       store.setEngineOnline(online);
-      if (!online) return;
+      if (!online || window.viai) return;
       try {
-        const [analyses, monitoring] = await Promise.all([getEngineEvents(), getMonitoringStatus()]);
+        const monitoring = await getMonitoringStatus();
         if (cancelled) return;
-        analyses.forEach(store.addHistory);
-        if (!window.viai) store.setMonitoringStatus(monitoring);
+        store.setMonitoringStatus(monitoring);
       } catch {
         store.setEngineOnline(false);
       }
@@ -181,7 +183,7 @@ function AppRoutes() {
   useEffect(() => window.viai?.background.onCommand((command) => {
     navigate(command === "quick-scan" ? "/quick-scan" : command === "realtime" ? "/realtime" : command === "history" ? "/history" : "/settings");
   }), [navigate]);
-  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><Skeleton className="loading-block" /></div>}><Routes location={location} key={location.pathname}><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /></Route></Routes></Suspense></AnimatePresence>;
+  return <AnimatePresence mode="wait"><Suspense fallback={<div className="loading-page"><LoadingState title="Loading security center" detail="Preparing the local workspace." /></div>}><Routes location={location} key={location.pathname}><Route path="/loading-preview" element={<LoadingPreview />} /><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /><Route path="/legal/terms" element={<Legal document="terms" />} /><Route path="/legal/privacy" element={<Legal document="privacy" />} /></Route></Routes></Suspense></AnimatePresence>;
 }
 
 function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif" } }} /></HashRouter>; }

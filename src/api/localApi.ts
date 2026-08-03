@@ -39,12 +39,17 @@ export interface LocalApiOptions {
 
 export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOptions = {}): Server {
   return createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ready", scope: "local-only" }));
       return;
     }
-    if (request.method === "GET" && request.url === "/events") {
-      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ analyses: options.getRecentAnalyses?.() ?? [], observations: options.getRecentObservations?.() ?? [] }));
+    if (request.method === "GET" && requestUrl.pathname === "/events") {
+      const since = Date.parse(requestUrl.searchParams.get("since") ?? "");
+      const after = Number.isFinite(since) ? since : Number.NEGATIVE_INFINITY;
+      const analyses = (options.getRecentAnalyses?.() ?? []).filter((analysis) => Date.parse(analysis.analyzedAt) > after);
+      const observations = (options.getRecentObservations?.() ?? []).filter((observation) => Date.parse(observation.timestamp) > after);
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ analyses, observations }));
       return;
     }
     if (request.method === "GET" && request.url === "/monitoring") {

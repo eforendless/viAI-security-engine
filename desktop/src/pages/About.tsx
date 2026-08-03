@@ -1,14 +1,13 @@
 import { BookOpen, Download, FileCode2, HeartHandshake, RefreshCw, ShieldCheck } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Button, Panel } from "../components/ui";
 import { pageMotion } from "../animations/motion";
 
 type UpdateStatus = "unsupported" | "idle" | "checking" | "available" | "downloading" | "downloaded" | "not-available" | "error";
 interface UpdateSnapshot { status: UpdateStatus; currentVersion: string; version?: string; percent?: number; message: string; }
 const initialUpdate: UpdateSnapshot = { status: "unsupported", currentVersion: "", message: "Updates are available in installed releases." };
-const termsOfServiceUrl = "https://github.com/eforendless/viAI-security-engine/blob/main/ToS.md";
-const privacyPolicyUrl = "https://github.com/eforendless/viAI-security-engine/blob/main/privacypolicy.md";
 
 export default function About() {
 	const [desktopVersion, setDesktopVersion] = useState("Unavailable");
@@ -28,5 +27,5 @@ export default function About() {
 	};
 	const busy = update.status === "checking" || update.status === "downloading";
 	const label = update.status === "available" ? "Download update" : update.status === "downloaded" ? "Install and restart" : update.status === "checking" ? "Checking" : update.status === "downloading" ? `Downloading${update.percent === undefined ? "" : ` ${update.percent}%`}` : "Check for updates";
-	return <motion.div {...pageMotion} className="page-stack narrow-page"><div className="about-mark"><ShieldCheck size={34} /></div><div className="page-title"><p className="eyebrow">ABOUT VIAI</p><h2>Local intelligence. Clear decisions.</h2><p>viAI security is the private visual control plane for the viAI Local Security Engine.</p></div><div className="about-grid"><Panel><FileCode2 size={20} /><span>Desktop version</span><strong>{desktopVersion}</strong></Panel><Panel><ShieldCheck size={20} /><span>Engine version</span><strong>{engineVersion}</strong></Panel><Panel><BookOpen size={20} /><span>Legal documents</span><strong className="about-links"><a href={termsOfServiceUrl} target="_blank" rel="noreferrer">Terms of Service</a><a href={privacyPolicyUrl} target="_blank" rel="noreferrer">Privacy Policy</a></strong></Panel><Panel><HeartHandshake size={20} /><span>License</span><strong>viAI ©</strong></Panel></div><Panel className="update-panel"><div><div className="setting-heading"><RefreshCw size={18} /><h3>Application updates</h3></div><p>{update.message}</p></div><Button className="primary" disabled={busy || update.status === "unsupported"} onClick={() => void updateApp()}>{update.status === "downloaded" || update.status === "available" ? <Download size={16} /> : <RefreshCw size={16} />}{label}</Button></Panel></motion.div>;
+	return <motion.div {...pageMotion} className="page-stack narrow-page"><div className="about-mark"><ShieldCheck size={34} /></div><div className="page-title"><p className="eyebrow">ABOUT VIAI</p><h2>Local intelligence. Clear decisions.</h2><p>viAI security is the private visual control plane for the viAI Local Security Engine.</p></div><div className="about-grid"><Panel><FileCode2 size={20} /><span>Desktop version</span><strong>{desktopVersion}</strong></Panel><Panel><ShieldCheck size={20} /><span>Engine version</span><strong>{engineVersion}</strong></Panel><Panel><BookOpen size={20} /><span>Legal documents</span><strong className="about-links"><Link to="/legal/terms">Terms of Service</Link><Link to="/legal/privacy">Privacy Policy</Link></strong></Panel><Panel><HeartHandshake size={20} /><span>License</span><strong>viAI ©</strong></Panel></div><Panel className="update-panel"><div><div className="setting-heading"><RefreshCw size={18} /><h3>Application updates</h3></div><p>{update.message}</p></div><Button className="primary" disabled={busy || update.status === "unsupported"} onClick={() => void updateApp()}>{update.status === "downloaded" || update.status === "available" ? <Download size={16} /> : <RefreshCw size={16} />}{label}</Button></Panel></motion.div>;
 }

@@ -13,6 +13,7 @@ export class ScanService {
   private readonly classifications = new Map<string, FileClassification>();
   private readonly idleWaiters: Array<() => void> = [];
   private resourceBaseline = { usage: process.cpuUsage(), at: Date.now() };
+  private lastProgressPublishedAt = 0;
 
   constructor(
     private readonly background: BackgroundService,
@@ -32,6 +33,7 @@ export class ScanService {
     this.classifications.clear();
     this.knownFiles.clear();
     this.resourceBaseline = { usage: process.cpuUsage(), at: Date.now() };
+    this.lastProgressPublishedAt = 0;
     this.requestedConcurrency = concurrency;
     const pendingFiles = await this.prioritize([...new Set(files)]);
     pendingFiles.forEach((filePath) => this.knownFiles.add(filePath));
@@ -198,13 +200,20 @@ export class ScanService {
       latest.memoryBytes = resource.memoryBytes;
       const checkpoint = latest.filesRemaining > 0 && latest.filesCompleted % progressCheckpointInterval === 0;
       await this.background.saveScan(latest, { persist: checkpoint, publish: false });
-      this.publishUpdate("scanProgress", latest);
+      if (this.shouldPublishProgress()) this.publishUpdate("scanProgress", latest);
     }
   }
 
   private publishUpdate(event: ScanEventName, scan: PersistedScanState): void {
     const { pendingFiles: _pendingFiles, ...update } = scan;
     this.publish(event, update);
+  }
+
+  private shouldPublishProgress(): boolean {
+    const now = Date.now();
+    if (now - this.lastProgressPublishedAt < 100) return false;
+    this.lastProgressPublishedAt = now;
+    return true;
   }
 
   private priorityCounts(files: readonly string[]): Partial<Record<PriorityBand, number>> {

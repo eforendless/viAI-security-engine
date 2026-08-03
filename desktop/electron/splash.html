@@ -10,8 +10,8 @@
     body { margin: 0; background: transparent; color: #edf7ff; overflow: hidden; }
     .surface { width: 100vw; height: 100vh; padding: 1px; background: linear-gradient(135deg, #18212c, #0b1017 56%, #111a25); border: 1px solid #38516a; border-radius: 14px; box-shadow: 0 24px 60px #00000080; }
     .content { height: 100%; display: grid; place-content: center; justify-items: center; padding: 46px; text-align: center; background: radial-gradient(circle at 50% 18%, #1a496133, transparent 42%); border-radius: 13px; }
-    .mark { width: 82px; height: 82px; display: grid; place-items: center; overflow: hidden; border: 1px solid #5ad3e899; border-radius: 20px; background: linear-gradient(145deg, #1b6790, #123047); color: #edfcff; font-size: 31px; font-weight: 750; box-shadow: 0 0 34px #39c8de38; }
-    .mark img { width: 100%; height: 100%; object-fit: cover; }
+    .mark { width: 82px; height: 82px; display: grid; place-items: center; overflow: hidden; color: #edfcff; font-size: 31px; font-weight: 750; }
+    .mark img { width: 100%; height: 100%; object-fit: contain; }
     h1 { margin: 20px 0 7px; font-size: 21px; font-weight: 650; letter-spacing: 0; }
     p { margin: 0; color: #9bb2c6; font-size: 13px; }
     .progress-area { width: 360px; margin-top: 32px; text-align: left; }
@@ -38,7 +38,7 @@
 <body>
   <main class="surface" id="surface">
     <section class="content">
-      <div class="mark" aria-label="viAI"><img src="../public/icon.ico" alt="" onerror="this.remove()" />V</div>
+      <div class="mark" aria-label="viAI"><img src="../public/viai-logodone.png" alt="" onerror="this.remove()" />V</div>
       <h1>viAI Local Security Engine</h1>
       <p id="subtitle">Initializing...</p>
       <div class="progress-area">

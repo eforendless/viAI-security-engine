@@ -31,6 +31,7 @@ let startupRunning = false;
 let restoreAfterStartup = false;
 let startupSnapshot: BackgroundSnapshot | undefined;
 let updateService: UpdateService | undefined;
+let engineEventsSince = new Date().toISOString();
 const launchedInBackground = process.argv.includes("--viai-background");
 
 if (!isPrimaryInstance) app.quit();
@@ -342,13 +343,14 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
     target = performanceMode === "deep" ? "All accessible PC files" : performanceMode === "light" ? "Important Windows locations" : "Common Windows locations";
     const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
-    const parallel = configuredParallel || (performanceMode === "light" ? 1 : performanceMode === "deep" ? 8 : 4);
+    const parallel = scanConcurrency(performanceMode, configuredParallel);
     const scan = await scanService.start(mode, target, [], parallel, false);
     void streamCandidates(fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync), performanceMode === "deep", (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).finally(() => scanService?.finishDiscovery(scan.id));
     return scan;
   }
   const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
-  const parallel = configuredParallel || (settings.performanceMode === "light" ? 1 : settings.performanceMode === "deep" ? 8 : 4);
+  const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
+  const parallel = scanConcurrency(performanceMode, configuredParallel);
   return scanService.start(mode, target ?? "", files, parallel);
 });
 ipcMain.handle("scan:pause", () => scanService?.pause());
@@ -390,6 +392,7 @@ ipcMain.handle("scan:system-roots", async () => {
 const engineUrl = "http://127.0.0.1:4117/analyze";
 const engineHealthUrl = "http://127.0.0.1:4117/health";
 const engineAnalysisTimeoutMs = 120_000;
+const engineAnalysisConcurrency = 2;
 
 ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
 
@@ -484,6 +487,11 @@ function fullScanRoots(mode: "light" | "balanced" | "deep", home: string, fixed:
   return [...new Set(["C:\\Windows\\Temp", ...important, join(home, "AppData"), "C:\\Program Files", "C:\\Program Files (x86)", ...removable])];
 }
 
+function scanConcurrency(mode: "light" | "balanced" | "deep", configured: number): number {
+  const requested = configured > 0 ? configured : mode === "light" ? 1 : engineAnalysisConcurrency;
+  return Math.max(1, Math.min(requested, engineAnalysisConcurrency));
+}
+
 function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = false): Promise<string[]> {
   return new Promise((resolve) => {
     const files: string[] = [];
@@ -523,7 +531,7 @@ function applyStartup(settings: Record<string, unknown>): void {
 function createTray(): void {
   if (tray && !tray.isDestroyed()) return;
   tray = undefined;
-  const iconPath = join(app.getAppPath(), "public", "icon.ico");
+  const iconPath = join(app.getAppPath(), "public", "viai-logodone.png");
   tray = new Tray(existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty());
   tray.setToolTip("viAI Local Security Engine");
   tray.on("double-click", () => showMainWindow());
@@ -577,15 +585,23 @@ function startEngineEventPolling(): void {
 
 async function syncEngineEvents(): Promise<void> {
   try {
-    const response = await fetch("http://127.0.0.1:4117/events");
+    const response = await fetch(`http://127.0.0.1:4117/events?since=${encodeURIComponent(engineEventsSince)}`);
     if (!response.ok) return;
     const body = await response.json() as { analyses?: unknown[]; observations?: unknown[] };
-    for (const analysis of body.analyses ?? []) if (analysis && typeof analysis === "object") await backgroundService?.recordAnalysis({ analysis });
+    let newestEventAt = Date.parse(engineEventsSince);
+    for (const analysis of body.analyses ?? []) {
+      if (!analysis || typeof analysis !== "object") continue;
+      const analyzedAt = (analysis as { analyzedAt?: unknown }).analyzedAt;
+      if (typeof analyzedAt === "string") newestEventAt = Math.max(newestEventAt, Date.parse(analyzedAt));
+      await backgroundService?.recordAnalysis({ analysis });
+    }
     for (const observation of body.observations ?? []) {
       if (!observation || typeof observation !== "object") continue;
-      const record = observation as { id?: unknown; detail?: unknown; category?: unknown };
+      const record = observation as { id?: unknown; detail?: unknown; category?: unknown; timestamp?: unknown };
+      if (typeof record.timestamp === "string") newestEventAt = Math.max(newestEventAt, Date.parse(record.timestamp));
       if (typeof record.id === "string" && typeof record.detail === "string") await backgroundService?.recordEvent(`Engine ${typeof record.category === "string" ? `${record.category}: ` : ""}${record.detail}`, `engine:${record.id}`);
     }
+    if (Number.isFinite(newestEventAt)) engineEventsSince = new Date(newestEventAt).toISOString();
   } catch {
     // The local engine may not have completed startup yet.
   }
@@ -616,11 +632,25 @@ function streamCandidates(roots: string[], includeAllFiles: boolean, onBatch: (f
     let completed = 0;
     let pending: string[] = [];
     let delivery = Promise.resolve();
+    let queuedBatches = 0;
+    let paused = false;
+    const pauseLimit = 8;
+    const resumeLimit = 3;
+    const setPaused = (next: boolean) => {
+      if (paused === next) return;
+      paused = next;
+      for (const worker of workers) worker.postMessage(next ? "pause" : "resume");
+    };
     const flush = () => {
       if (pending.length === 0) return;
       const batch = pending;
       pending = [];
-      delivery = delivery.then(() => onBatch(batch));
+      queuedBatches += 1;
+      if (queuedBatches >= pauseLimit) setPaused(true);
+      delivery = delivery.then(() => onBatch(batch)).finally(() => {
+        queuedBatches -= 1;
+        if (paused && queuedBatches <= resumeLimit) setPaused(false);
+      });
     };
     const finish = () => { flush(); void delivery.finally(resolve); };
     if (workers.length === 0) finish();

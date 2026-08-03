@@ -65,10 +65,15 @@ async function collectWindowsFacts(): Promise<WindowsFacts> {
   try { const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 12_000 }); return JSON.parse(stdout) as WindowsFacts; } catch { return {}; }
 }
 
-function networkDetails(): { ipAddress: string; macAddress: string } {
-  for (const interfaces of Object.values(networkInterfaces())) for (const entry of interfaces ?? []) if (!entry.internal && entry.family === "IPv4") return { ipAddress: entry.address, macAddress: entry.mac || "Not Available" };
-  return { ipAddress: "Not Available", macAddress: "Not Available" };
+export function selectNetworkDetails(interfaces = networkInterfaces()): { ipAddress: string; macAddress: string } {
+  const candidates = Object.values(interfaces).flatMap((entries) => entries ?? []).filter((entry) => !entry.internal && entry.family === "IPv4");
+  const primary = candidates.find((entry) => isUsableMacAddress(entry.mac));
+  if (primary) return { ipAddress: primary.address, macAddress: primary.mac.toUpperCase() };
+  return { ipAddress: candidates[0]?.address ?? "Not Available", macAddress: "Not Available" };
 }
+
+function networkDetails(): { ipAddress: string; macAddress: string } { return selectNetworkDetails(); }
+function isUsableMacAddress(value: string | undefined): value is string { return Boolean(value && /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(value) && value !== "00:00:00:00:00:00"); }
 
 function cpuUsage(): number {
   const current = cpus();

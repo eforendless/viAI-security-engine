@@ -61,7 +61,7 @@ test("a cancelled scan survives restart with its cancellation diagnostics", asyn
   }
 });
 
-test("history can be cleared by risk scope and a full reset removes persisted local data", async () => {
+test("history can be cleared by risk scope and clearing local data preserves protection settings", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-clear-data-"));
   const path = join(directory, "background-settings.json");
   try {
@@ -74,7 +74,8 @@ test("history can be cleared by risk scope and a full reset removes persisted lo
     await service.clearAllData();
     assert.equal(service.snapshot().history.length, 0);
     assert.equal(service.snapshot().activeScan, undefined);
-    assert.equal(existsSync(path), false);
+    assert.equal(service.snapshot().settings.backgroundProtection, true);
+    assert.equal(existsSync(path), true);
     assert.equal(existsSync(join(directory, "background-history.json")), false);
   } finally {
     await rm(directory, { recursive: true, force: true });

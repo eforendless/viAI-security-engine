@@ -304,7 +304,7 @@ ipcMain.handle("window-controls:close", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
-ipcMain.handle("background:snapshot", () => backgroundService?.snapshot());
+ipcMain.handle("background:snapshot", () => backgroundService?.loadHistory());
 ipcMain.handle("background:update", async (_event, changes: Record<string, unknown>) => {
   if (!changes || typeof changes !== "object") throw new Error("Invalid background settings update");
   return backgroundService?.update(changes);

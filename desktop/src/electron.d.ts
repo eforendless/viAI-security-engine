@@ -20,6 +20,7 @@ declare global {
       };
       background: {
         snapshot(): Promise<unknown>;
+        historyRecord(id: string): Promise<unknown>;
         update(changes: Record<string, unknown>): Promise<unknown>;
         restoreRecommended(): Promise<unknown>;
         restoreFactory(): Promise<unknown>;

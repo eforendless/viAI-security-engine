@@ -45,21 +45,36 @@ export class StartupPipeline {
   async execute(): Promise<void> {
     const totalWeight = [...this.tasks.values()].reduce((total, task) => total + task.weight, 0);
     while (this.completed.size < this.tasks.size) {
-      const task = [...this.tasks.values()].find((candidate) => !this.completed.has(candidate.id) && (candidate.dependencies ?? []).every((dependency) => this.completed.has(dependency)));
-      if (!task) throw new Error("Startup task dependencies cannot be resolved");
+      const ready = [...this.tasks.values()].filter((candidate) => !this.completed.has(candidate.id) && (candidate.dependencies ?? []).every((dependency) => this.completed.has(dependency)));
+      if (ready.length === 0) throw new Error("Startup task dependencies cannot be resolved");
       const completedWeight = this.completedWeight();
-      const taskProgress = { id: task.id, name: task.name, weight: task.weight };
-      this.progress.publish({ type: "started", task: taskProgress, progress: percent(completedWeight, totalWeight), completedWeight, totalWeight });
-      const startedAt = Date.now();
-      try {
-        await task.execute();
-      } catch (error) {
-        this.progress.publish({ type: "failed", task: taskProgress, progress: percent(completedWeight, totalWeight), completedWeight, totalWeight, durationMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) });
-        throw error;
+      const work = ready.map(async (task) => {
+        const taskProgress = { id: task.id, name: task.name, weight: task.weight };
+        this.progress.publish({ type: "started", task: taskProgress, progress: percent(completedWeight, totalWeight), completedWeight, totalWeight });
+        const startedAt = Date.now();
+        try {
+          await task.execute();
+          return { task, taskProgress, durationMs: Date.now() - startedAt };
+        } catch (error) {
+          this.progress.publish({ type: "failed", task: taskProgress, progress: percent(completedWeight, totalWeight), completedWeight, totalWeight, durationMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) });
+          throw error;
+        }
+      });
+      const results = await Promise.all(work.map(async (task) => {
+        try {
+          return { status: "fulfilled" as const, value: await task };
+        } catch (reason) {
+          return { status: "rejected" as const, reason };
+        }
+      }));
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        this.completed.add(result.value.task.id);
+        const nextWeight = this.completedWeight();
+        this.progress.publish({ type: "completed", task: result.value.taskProgress, progress: percent(nextWeight, totalWeight), completedWeight: nextWeight, totalWeight, durationMs: result.value.durationMs });
       }
-      this.completed.add(task.id);
-      const nextWeight = this.completedWeight();
-      this.progress.publish({ type: "completed", task: taskProgress, progress: percent(nextWeight, totalWeight), completedWeight: nextWeight, totalWeight, durationMs: Date.now() - startedAt });
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
     }
     this.progress.publish({ type: "ready", progress: 100, completedWeight: totalWeight, totalWeight });
   }

@@ -22,8 +22,10 @@ test("background history persists complete scan reports for later detail views",
     assert.equal(snapshot.history[0].scanDurationMs, 1250);
     assert.equal(snapshot.history[0].engineVersion, "9.8.7");
     assert.deepEqual(snapshot.history[0].matchedRules, ["unsigned-executable"]);
-    assert.equal(snapshot.history[0].report?.filePath, "C:\\samples\\setup.exe");
-    assert.equal((snapshot.history[0].report?.evidenceStore as { processingMetadata?: { fileReadCount?: number } } | undefined)?.processingMetadata?.fileReadCount, 1);
+    assert.equal(snapshot.history[0].fileExtension, ".exe");
+    const record = await reloaded.historyRecord(snapshot.history[0].id);
+    assert.equal(record?.report?.filePath, "C:\\samples\\setup.exe");
+    assert.equal((record?.report?.evidenceStore as { processingMetadata?: { fileReadCount?: number } } | undefined)?.processingMetadata?.fileReadCount, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -191,6 +191,14 @@ async function prepareDashboard(): Promise<void> {
   await dashboardLoad;
 }
 
+function announceStartupReady(): void {
+  if (startupComplete || quitting || disposing) return;
+  startupComplete = true;
+  if (startupSnapshot?.settings.notifyBackgroundStarted === true) showNotification(startupSnapshot.settings, "viAI background protection", "Local monitoring is running.");
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send("startup:ready");
+  else completeStartupTransition();
+}
+
 async function waitForEngineReady(): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -216,7 +224,7 @@ function configureStartup(): StartupManager {
     { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType) => analyzeEngineFile(filePath, scanType), publishScan); await scanService.recover(); } },
     { id: "notifications", name: "Preparing local notifications", weight: 5, dependencies: ["persistence"], execute: async () => { Notification.isSupported(); } },
     { id: "tray", name: "Creating secure system tray service", weight: 5, dependencies: ["persistence"], execute: async () => { createTray(); } },
-    { id: "dashboard", name: "Preparing secure dashboard", weight: 15, dependencies: ["devices", "recovery", "notifications", "tray"], execute: prepareDashboard },
+    { id: "dashboard", name: "Preparing secure dashboard", weight: 15, dependencies: ["persistence"], execute: async () => { await prepareDashboard(); announceStartupReady(); } },
   ]);
   startupManager = manager;
   return manager;
@@ -228,10 +236,7 @@ async function runStartup(): Promise<void> {
   try {
     const manager = configureStartup();
     await manager.start();
-    startupComplete = true;
-    if (startupSnapshot?.settings.notifyBackgroundStarted === true) showNotification(startupSnapshot.settings, "viAI background protection", "Local monitoring is running.");
-    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send("startup:ready");
-    else completeStartupTransition();
+    announceStartupReady();
   } catch (error) {
     console.error("viAI startup failed", error);
     if (!splashWindow && !quitting && !disposing) await createSplashWindow();
@@ -305,6 +310,10 @@ ipcMain.handle("window-controls:close", (event) => {
 });
 
 ipcMain.handle("background:snapshot", () => backgroundService?.loadHistory());
+ipcMain.handle("background:history-record", async (_event, id: string) => {
+  if (typeof id !== "string" || id.length > 128) throw new Error("Invalid history record request");
+  return backgroundService?.historyRecord(id);
+});
 ipcMain.handle("background:update", async (_event, changes: Record<string, unknown>) => {
   if (!changes || typeof changes !== "object") throw new Error("Invalid background settings update");
   return backgroundService?.update(changes);

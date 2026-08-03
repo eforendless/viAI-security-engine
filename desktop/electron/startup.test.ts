@@ -31,3 +31,20 @@ test("startup retry resumes after a failed task without rerunning completed depe
   assert.equal(settingsRuns, 1);
   assert.equal(attempts, 2);
 });
+
+test("startup pipeline runs independent tasks concurrently", async () => {
+  const manager = new StartupManager();
+  const completed: string[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  manager.register([
+    { id: "first", name: "First", weight: 1, execute: async () => { await first; completed.push("first"); } },
+    { id: "second", name: "Second", weight: 1, execute: async () => { completed.push("second"); } },
+  ]);
+  const started = manager.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(completed, ["second"]);
+  releaseFirst?.();
+  await started;
+  assert.deepEqual(completed, ["second", "first"]);
+});

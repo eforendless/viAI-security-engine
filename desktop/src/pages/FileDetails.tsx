@@ -6,13 +6,12 @@ import { Button, DropdownMenu, LoadingState, Panel, RiskBadge } from "../compone
 import { pageMotion } from "../animations/motion";
 
 interface RecordDetail { id: string; kind: string; occurredAt: string; detail: string; filePath?: string; fileHash?: string; riskScore?: number; trustScore?: number; recommendation?: string; matchedRules?: string[]; trustIndicators?: string[]; engineVersion?: string; scanDurationMs?: number; scanType?: string; report?: Record<string, unknown>; }
-interface Snapshot { history: RecordDetail[]; }
 type ExportFormat = "excel" | "pdf" | "html" | "json";
 const exportOptions = [{ value: "excel", label: "Excel" }, { value: "pdf", label: "PDF" }, { value: "html", label: "HTML" }, { value: "json", label: "JSON" }] as const;
 
 export default function FileDetails() {
   const { id } = useParams(); const navigate = useNavigate(); const [record, setRecord] = useState<RecordDetail>(); const [loaded, setLoaded] = useState(false); const [engineVersion, setEngineVersion] = useState<string>();
-  useEffect(() => { let active = true; const select = (value: unknown) => { const next = (value as Snapshot)?.history?.find((entry) => entry.id === id); if (active) { setRecord(next); setLoaded(true); } }; void (async () => { try { select(await window.viai?.background.snapshot()); } catch { if (active) setLoaded(true); } })(); void window.viai?.application.engineVersion().then((value) => { if (active) setEngineVersion(value); }); return window.viai?.background.onChanged(select); }, [id]);
+  useEffect(() => { let active = true; void (async () => { try { const next = id ? await window.viai?.background.historyRecord(id) : undefined; if (active) setRecord(next as RecordDetail | undefined); } finally { if (active) setLoaded(true); } })(); void window.viai?.application.engineVersion().then((value) => { if (active) setEngineVersion(value); }); return () => { active = false; }; }, [id]);
   if (!loaded) return <motion.div {...pageMotion} className="empty-report"><LoadingState title="Loading local report" detail="Retrieving the selected analysis report." /></motion.div>;
   if (!record) return <motion.div {...pageMotion} className="empty-report"><FileBadge size={42} /><h2>Report not found</h2><p>This local report is no longer available.</p><Button onClick={() => navigate("/history")}><ArrowLeft size={16} />Back to history</Button></motion.div>;
   const report = record.report ?? {}; const metadata = object(report.metadata); const hashes = object(report.hashes); const professional = object(report.report); const reportTrust = object(professional.trust); const reportRisk = object(professional.risk); const reportConfidence = object(professional.confidence); const signature = object(report.digitalSignature); const evidence = strings(report.evidence); const displayedEngineVersion = engineVersion ?? record.engineVersion ?? "Not recorded";

@@ -24,7 +24,9 @@ export interface BackgroundHistoryRecord {
   trustIndicators?: string[];
   scanDurationMs?: number;
   scanType?: "quick" | "full" | "folder" | "single-file" | "realtime";
+  fileExtension?: string;
 }
+export type BackgroundHistorySummary = Omit<BackgroundHistoryRecord, "report">;
 
 export type ScanStatus = "running" | "paused" | "completed" | "cancelled" | "failed";
 
@@ -64,7 +66,7 @@ export interface PersistedScanState {
 
 export interface BackgroundSnapshot {
   settings: BackgroundSettings;
-  history: BackgroundHistoryRecord[];
+  history: BackgroundHistorySummary[];
   scanCacheEntries: number;
   activeMonitors: string[];
   activeScan?: Omit<PersistedScanState, "pendingFiles">;
@@ -116,7 +118,7 @@ export class BackgroundService {
     return this.snapshot();
   }
 
-  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: [...this.history], scanCacheEntries: this.scanCache.size, activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined }; }
+  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: this.history.map(historySummary), scanCacheEntries: this.scanCache.size, activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined }; }
   currentScan(): PersistedScanState | undefined { return this.activeScan ? { ...this.activeScan, pendingFiles: [...this.activeScan.pendingFiles] } : undefined; }
   async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); await this.persist(); return this.publish(); }); }
   async restoreRecommended(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...recommendedSettings }; await this.apply(); await this.persist(); return this.publish(); }); }
@@ -126,6 +128,7 @@ export class BackgroundService {
   async clearHistory(scope: HistoryClearScope = "all"): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = scope === "all" ? [] : this.history.filter((record) => riskLevel(record.riskScore) !== scope); await this.persistHistory(); this.publish(); }); }
   async clearAllData(): Promise<void> { await this.enqueue(async () => { this.settings = { ...factorySettings }; this.history = []; this.legacyHistory = []; this.historyLoaded = true; this.historyDirty = false; this.activeScan = undefined; this.scanCache.clear(); this.scanCacheDirty = false; await this.apply(); await rm(this.dataPath, { force: true }); await rm(this.historyPath, { force: true }); await rm(this.scanCachePath, { force: true }); this.publish(); }); }
   async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
+  async historyRecord(id: string): Promise<BackgroundHistoryRecord | undefined> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); return this.history.find((record) => record.id === id); }); }
   async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
   scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.scanCache.get(cacheKey(filePath)); }
   recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
@@ -139,7 +142,7 @@ export class BackgroundService {
       const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
-      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
+      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
       if (deferPersistence) {
         this.historyDirty = true;
         this.scheduleHistoryFlush();
@@ -273,6 +276,7 @@ function validateScan(value: unknown): PersistedScanState | undefined {
   };
 }
 function publicScan(scan: PersistedScanState): Omit<PersistedScanState, "pendingFiles"> { const { pendingFiles: _pendingFiles, ...publicState } = scan; return publicState; }
+function historySummary(record: BackgroundHistoryRecord): BackgroundHistorySummary { const { report: _report, ...summary } = record; return summary; }
 function cloneRecord(value: Record<string, any>): Record<string, unknown> { return JSON.parse(JSON.stringify(value)) as Record<string, unknown>; }
 function strings(value: SettingValue | undefined): readonly string[] { return Array.isArray(value) ? value : []; }
 function analysisRecord(value: unknown): Record<string, any> | undefined { return value && typeof value === "object" && "analysis" in value && (value as { analysis?: unknown }).analysis && typeof (value as { analysis: unknown }).analysis === "object" ? (value as { analysis: Record<string, any> }).analysis : undefined; }

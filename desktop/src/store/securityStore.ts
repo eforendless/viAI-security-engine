@@ -113,10 +113,9 @@ function priorityBuckets(value: unknown): ScanState["priorityRemaining"] {
 function historyFromBackground(records: unknown[]): HistoryItem[] {
   return records.flatMap((record) => {
     if (!record || typeof record !== "object") return [];
-    const source = record as { id?: unknown; kind?: unknown; report?: unknown };
-    if (source.kind !== "scan" || typeof source.id !== "string" || !source.report || typeof source.report !== "object") return [];
-    const report = source.report as Partial<EngineAnalysis>;
-    if (typeof report.filePath !== "string" || typeof report.analyzedAt !== "string" || typeof report.finalRiskScore !== "number" || !report.hashes || !report.metadata) return [];
-    return [{ ...report, id: source.id } as HistoryItem];
+    const source = record as { id?: unknown; kind?: unknown; occurredAt?: unknown; filePath?: unknown; fileHash?: unknown; fileExtension?: unknown; riskScore?: unknown; trustScore?: unknown; recommendation?: unknown };
+    if (source.kind !== "scan" || typeof source.id !== "string" || typeof source.filePath !== "string" || typeof source.occurredAt !== "string" || typeof source.riskScore !== "number") return [];
+    const extension = typeof source.fileExtension === "string" ? source.fileExtension : source.filePath.match(/\.[^\\/.]+$/)?.[0] ?? "";
+    return [{ id: source.id, filePath: source.filePath, analyzedAt: source.occurredAt, finalRiskScore: source.riskScore, trustScore: typeof source.trustScore === "number" ? source.trustScore : 0, recommendation: typeof source.recommendation === "string" ? source.recommendation : "MONITOR", hashes: { sha256: typeof source.fileHash === "string" ? source.fileHash : "", sha1: "", md5: "" }, fileType: "", metadata: { size: 0, extension, createdAt: "", modifiedAt: "", isExecutableCandidate: false }, signatureStatus: "unknown", entropy: 0, packer: { detected: false, names: [], reasons: [] }, peMetadata: { isPe: false, imports: [], suspiciousImports: [], sections: [] }, heuristicScore: 0, reputationScore: 0, overallScore: source.riskScore, confidence: 0, riskLevel: source.riskScore <= 25 ? "low" : source.riskScore <= 60 ? "medium" : "high", decision: "", evidence: [] }];
   });
 }

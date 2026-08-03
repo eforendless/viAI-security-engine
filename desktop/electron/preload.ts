@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("viai", {
   },
   background: {
     snapshot: () => ipcRenderer.invoke("background:snapshot") as Promise<unknown>,
+    historyRecord: (id: string) => ipcRenderer.invoke("background:history-record", id) as Promise<unknown>,
     update: (changes: Record<string, unknown>) => ipcRenderer.invoke("background:update", changes) as Promise<unknown>,
     restoreRecommended: () => ipcRenderer.invoke("background:restore-recommended") as Promise<unknown>,
     restoreFactory: () => ipcRenderer.invoke("background:restore-factory") as Promise<unknown>,

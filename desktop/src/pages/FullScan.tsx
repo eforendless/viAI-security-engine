@@ -13,17 +13,24 @@ export default function FullScan() {
   const performanceMode = useSecurityStore((state) => state.performanceMode);
   const [insightTab, setInsightTab] = useState<"scheduler" | "performance">("scheduler");
   const [now, setNow] = useState(Date.now());
+  const [showCancellationNotice, setShowCancellationNotice] = useState(false);
   useEffect(() => { if (!scan.active) return; const timer = window.setInterval(() => setNow(Date.now()), 1_000); return () => window.clearInterval(timer); }, [scan.active]);
-  const progress = scan.total ? (scan.completed / scan.total) * 100 : 0;
+  useEffect(() => {
+    if (scan.status !== "cancelled" && !scan.cancelled) return;
+    setShowCancellationNotice(true);
+    const timer = window.setTimeout(() => setShowCancellationNotice(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [scan.cancelled, scan.status]);
+  const progress = scan.active && scan.total ? (scan.completed / scan.total) * 100 : 0;
   const elapsed = scan.startedAt ? Math.max(0, now - scan.startedAt - (scan.pausedDurationMs ?? 0) - (scan.pausedAt ? Math.max(0, now - scan.pausedAt) : 0)) : 0;
-  const cacheTotal = (scan.cacheHits ?? 0) + (scan.cacheMisses ?? 0);
+  const cacheTotal = scan.active ? (scan.cacheHits ?? 0) + (scan.cacheMisses ?? 0) : 0;
   const cacheHitRate = cacheTotal ? `${Math.round(((scan.cacheHits ?? 0) / cacheTotal) * 100)}%` : "-";
-  const remaining = scan.total ? Math.max(0, scan.total - scan.completed) : 0;
+  const remaining = scan.active && scan.total ? Math.max(0, scan.total - scan.completed) : 0;
   const isPausing = scan.status === "pausing";
   const isPaused = scan.status === "paused";
   const isResuming = scan.status === "resuming";
   const isCancelling = scan.status === "cancelling";
-  const scanState = isCancelling ? "Cancelling scan" : isPausing ? "Pausing scan" : isPaused ? "Scan paused" : isResuming ? "Resuming scan" : scan.cancelled ? "Scan cancelled" : scan.active ? "Local engine is analyzing" : "Ready when you are";
+  const scanState = isCancelling ? "Cancelling scan" : isPausing ? "Pausing scan" : isPaused ? "Scan paused" : isResuming ? "Resuming scan" : scan.active ? "Local engine is analyzing" : showCancellationNotice ? "Scan cancelled" : "Ready when you are";
   return <motion.div {...pageMotion} className="page-stack">
     <div className="page-title split-title">
       <div><p className="eyebrow">SYSTEM-WIDE REVIEW</p><h2>Full system scan</h2><p>{performanceDescription(performanceMode)}</p></div>
@@ -33,10 +40,10 @@ export default function FullScan() {
       <Radar progress={progress} active={scan.active && !isPaused && !isPausing && !isCancelling} />
       <div className="scan-center">
         <div className="scan-state"><span className={scan.active && !isPaused && !isCancelling ? "pulse-dot" : "status-dot"} />{scanState}</div>
-        <h3>{scan.currentPath || "System locations are ready for review"}</h3>
+        <h3>{scan.active ? scan.currentPath || "Preparing local analysis" : "System locations are ready for review"}</h3>
         <p>{scan.stage ?? (scan.active ? "Analysis continues independently from this window." : performanceDescription(performanceMode))}</p>
         <div className="progress-track"><motion.span animate={{ scaleX: progress / 100 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} /></div>
-        <div className="scan-stats"><span><strong>{scan.completed.toLocaleString()}</strong> files scanned</span><span><strong>{scan.investigationCount}</strong> need investigation</span><span><strong>{remaining.toLocaleString()}</strong> remaining</span></div>
+        <div className="scan-stats"><span><strong>{scan.active ? scan.completed.toLocaleString() : "0"}</strong> files scanned</span><span><strong>{scan.active ? scan.investigationCount : 0}</strong> need investigation</span><span><strong>{remaining.toLocaleString()}</strong> remaining</span></div>
         <div className="scan-controls">
           {scan.active ? <>{!isCancelling && <Button disabled={isPausing || isResuming} onClick={() => void (isPaused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{isPaused ? <Play size={16} /> : <Pause size={16} />}{isPaused ? "Resume" : isPausing ? "Pausing..." : isResuming ? "Resuming..." : "Pause"}</Button>}<Button className="danger" disabled={isCancelling} onClick={() => void window.viai?.scans.cancel()}><Square size={15} />{isCancelling ? "Cancelling..." : "Cancel scan"}</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />Start full scan</Button>}
         </div>
@@ -45,9 +52,9 @@ export default function FullScan() {
     <section className="scan-meta-grid">
       <Meta icon={Clock3} label="Elapsed time" value={scan.active ? formatDuration(elapsed) : "-"} />
       <Meta icon={TimerReset} label="Estimated remaining" value={scan.active && scan.estimatedRemainingMs !== undefined ? formatDuration(scan.estimatedRemainingMs) : "-"} />
-      <Meta icon={Cpu} label="Process CPU" value={`${scan.cpuPercent ?? 0}%`} />
-      <Meta icon={Database} label="Process memory" value={formatBytes(scan.memoryBytes ?? 0)} />
-      <Meta icon={Gauge} label="Current throughput" value={`${scan.throughputPerSecond ?? 0} files/s`} />
+      <Meta icon={Cpu} label="Process CPU" value={scan.active ? `${scan.cpuPercent ?? 0}%` : "-"} />
+      <Meta icon={Database} label="Process memory" value={scan.active ? formatBytes(scan.memoryBytes ?? 0) : "-"} />
+      <Meta icon={Gauge} label="Current throughput" value={scan.active ? `${scan.throughputPerSecond ?? 0} files/s` : "-"} />
     </section>
     <Panel className="scan-insights-panel">
       <div className="scan-insights-header">
@@ -62,17 +69,17 @@ export default function FullScan() {
       </div>
       {insightTab === "scheduler" ? <div className="scheduler-insights" role="tabpanel">
         <dl className="scheduler-metrics">
-          <div><dt>Workers</dt><dd>{scan.workersActive ?? 0} <span>/ {scan.workersTotal ?? 0} active</span></dd></div>
+          <div><dt>Workers</dt><dd>{scan.active ? scan.workersActive ?? 0 : 0} <span>/ {scan.active ? scan.workersTotal ?? 0 : 0} active</span></dd></div>
           <div><dt>Cache hit rate</dt><dd>{cacheHitRate}</dd></div>
-          <div><dt>Unchanged skipped</dt><dd>{scan.cacheSkipped ?? 0}</dd></div>
-          <div><dt>Forensic analyzed</dt><dd>{scan.forensicCount ?? 0}</dd></div>
-          <div><dt>Unavailable files</dt><dd>{scan.errorCount ?? 0}</dd></div>
+          <div><dt>Unchanged skipped</dt><dd>{scan.active ? scan.cacheSkipped ?? 0 : 0}</dd></div>
+          <div><dt>Forensic analyzed</dt><dd>{scan.active ? scan.forensicCount ?? 0 : 0}</dd></div>
+          <div><dt>Unavailable files</dt><dd>{scan.active ? scan.errorCount ?? 0 : 0}</dd></div>
         </dl>
         <div className="priority-queue" aria-label="Priority queue">
-          <span><i className="critical" />Critical <strong>{scan.priorityRemaining?.critical ?? 0}</strong></span>
-          <span><i className="high" />High <strong>{scan.priorityRemaining?.high ?? 0}</strong></span>
-          <span><i className="medium" />Medium <strong>{scan.priorityRemaining?.medium ?? 0}</strong></span>
-          <span><i className="low" />Low and inventory <strong>{(scan.priorityRemaining?.low ?? 0) + (scan.priorityRemaining?.inventory ?? 0)}</strong></span>
+          <span><i className="critical" />Critical <strong>{scan.active ? scan.priorityRemaining?.critical ?? 0 : 0}</strong></span>
+          <span><i className="high" />High <strong>{scan.active ? scan.priorityRemaining?.high ?? 0 : 0}</strong></span>
+          <span><i className="medium" />Medium <strong>{scan.active ? scan.priorityRemaining?.medium ?? 0 : 0}</strong></span>
+          <span><i className="low" />Low and inventory <strong>{scan.active ? (scan.priorityRemaining?.low ?? 0) + (scan.priorityRemaining?.inventory ?? 0) : 0}</strong></span>
         </div>
       </div> : <div className="performance-insights" role="tabpanel">
         <div className={`performance-emblem ${performanceMode}`}><Gauge size={25} /></div>

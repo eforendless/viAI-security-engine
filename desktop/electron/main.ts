@@ -328,9 +328,12 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
   } else {
     const home = homedir();
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
-    const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives());
-    files = await collectCandidates(roots.filter(existsSync), Infinity, performanceMode === "deep");
     target = performanceMode === "deep" ? "All accessible PC files" : performanceMode === "light" ? "Important Windows locations" : "Common Windows locations";
+    const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
+    const parallel = configuredParallel || (performanceMode === "light" ? 1 : performanceMode === "deep" ? 8 : 4);
+    const scan = await scanService.start(mode, target, [], parallel, false);
+    void streamCandidates(fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync), performanceMode === "deep", (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).finally(() => scanService?.finishDiscovery(scan.id));
+    return scan;
   }
   const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
   const parallel = configuredParallel || (settings.performanceMode === "light" ? 1 : settings.performanceMode === "deep" ? 8 : 4);
@@ -593,4 +596,32 @@ function disposeMainResources(): void {
   if (engineProcess && !engineProcess.killed) engineProcess.kill();
   engineProcess = undefined;
 }
+}
+
+function streamCandidates(roots: string[], includeAllFiles: boolean, onBatch: (files: string[]) => Promise<void>): Promise<void> {
+  return new Promise((resolve) => {
+    const workers = roots.map((root) => new Worker(join(__dirname, "scanWorker.js"), { workerData: { root, includeAllFiles } }));
+    let completed = 0;
+    let pending: string[] = [];
+    let delivery = Promise.resolve();
+    const flush = () => {
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      delivery = delivery.then(() => onBatch(batch));
+    };
+    const finish = () => { flush(); void delivery.finally(resolve); };
+    if (workers.length === 0) finish();
+    for (const worker of workers) {
+      worker.on("message", (filePath: string) => {
+        pending.push(filePath);
+        if (pending.length >= 64) flush();
+      });
+      worker.once("error", () => undefined);
+      worker.once("exit", () => {
+        completed += 1;
+        if (completed === workers.length) finish();
+      });
+    }
+  });
 }

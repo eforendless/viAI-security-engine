@@ -58,6 +58,7 @@ export interface PersistedScanState {
   cpuPercent?: number;
   memoryBytes?: number;
   priorityRemaining?: Partial<Record<"critical" | "high" | "medium" | "low" | "inventory", number>>;
+  discoveryComplete?: boolean;
   pendingFiles: string[];
 }
 
@@ -267,7 +268,7 @@ function validateScan(value: unknown): PersistedScanState | undefined {
     updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(),
     currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "",
     filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined,
-    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, pendingFiles: [...scan.pendingFiles],
+    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, discoveryComplete: scan.discoveryComplete !== false, pendingFiles: [...scan.pendingFiles],
   };
 }
 function publicScan(scan: PersistedScanState): Omit<PersistedScanState, "pendingFiles"> { const { pendingFiles: _pendingFiles, ...publicState } = scan; return publicState; }

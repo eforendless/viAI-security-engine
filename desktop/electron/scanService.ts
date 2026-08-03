@@ -9,6 +9,7 @@ export class ScanService {
   private processing = false;
   private requestedConcurrency = 2;
   private readonly inFlight = new Set<string>();
+  private readonly knownFiles = new Set<string>();
   private readonly classifications = new Map<string, FileClassification>();
   private readonly idleWaiters: Array<() => void> = [];
   private resourceBaseline = { usage: process.cpuUsage(), at: Date.now() };
@@ -25,21 +26,56 @@ export class ScanService {
     if (scan?.status === "running") void this.process(scan.id);
   }
 
-  async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number): Promise<PersistedScanState> {
+  async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number, discoveryComplete = true): Promise<PersistedScanState> {
     const existing = this.background.currentScan();
     if (existing?.status === "running" || existing?.status === "paused") throw new Error("A scan is already running");
     this.classifications.clear();
+    this.knownFiles.clear();
     this.resourceBaseline = { usage: process.cpuUsage(), at: Date.now() };
     this.requestedConcurrency = concurrency;
     const pendingFiles = await this.prioritize([...new Set(files)]);
+    pendingFiles.forEach((filePath) => this.knownFiles.add(filePath));
     const now = new Date().toISOString();
-    const scan: PersistedScanState = { id: crypto.randomUUID(), mode, target, startedAt: now, updatedAt: now, currentFile: "Priority queue ready", filesCompleted: 0, filesRemaining: pendingFiles.length, totalFiles: pendingFiles.length, progress: 0, currentStage: "Prioritizing", status: "running", investigationCount: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: Math.max(1, Math.min(concurrency, 8)), peakQueueLength: pendingFiles.length, priorityRemaining: this.priorityCounts(pendingFiles), pendingFiles };
+    const scan: PersistedScanState = { id: crypto.randomUUID(), mode, target, startedAt: now, updatedAt: now, currentFile: discoveryComplete ? "Priority queue ready" : "Discovering files", filesCompleted: 0, filesRemaining: pendingFiles.length, totalFiles: pendingFiles.length, progress: 0, currentStage: discoveryComplete ? "Prioritizing" : "Discovering files", status: "running", investigationCount: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: Math.max(1, Math.min(concurrency, 8)), peakQueueLength: pendingFiles.length, priorityRemaining: this.priorityCounts(pendingFiles), discoveryComplete, pendingFiles };
     scan.filesRemaining = scan.pendingFiles.length;
     scan.totalFiles = scan.pendingFiles.length;
     await this.background.saveScan(scan);
     this.publishUpdate("scanStarted", scan);
     void this.process(scan.id, concurrency);
     return scan;
+  }
+
+  async addCandidates(scanId: string, files: string[]): Promise<void> {
+    const scan = this.background.currentScan();
+    if (!scan || scan.id !== scanId || scan.status !== "running") return;
+    const uniqueFiles = files.filter((filePath) => !this.knownFiles.has(filePath));
+    if (uniqueFiles.length === 0) return;
+    uniqueFiles.forEach((filePath) => this.knownFiles.add(filePath));
+    const pendingFiles = await this.prioritize(uniqueFiles);
+    const latest = this.background.currentScan();
+    if (!latest || latest.id !== scanId || latest.status !== "running") return;
+    latest.pendingFiles.push(...pendingFiles);
+    latest.totalFiles += pendingFiles.length;
+    latest.filesRemaining = latest.pendingFiles.length;
+    latest.peakQueueLength = Math.max(latest.peakQueueLength ?? 0, latest.pendingFiles.length);
+    latest.priorityRemaining = this.priorityCounts(latest.pendingFiles);
+    latest.currentFile = "Discovering files";
+    latest.currentStage = "Discovering files";
+    latest.updatedAt = new Date().toISOString();
+    await this.background.saveScan(latest, { persist: false, publish: false });
+    this.publishUpdate("scanProgress", latest);
+    void this.process(scanId);
+  }
+
+  async finishDiscovery(scanId: string): Promise<void> {
+    const scan = this.background.currentScan();
+    if (!scan || scan.id !== scanId || scan.status !== "running") return;
+    scan.discoveryComplete = true;
+    scan.currentStage = scan.pendingFiles.length ? "Prioritizing" : "Finalizing";
+    scan.updatedAt = new Date().toISOString();
+    await this.background.saveScan(scan, { publish: false });
+    this.publishUpdate("scanProgress", scan);
+    void this.process(scanId);
   }
 
   private async prioritize(files: string[]): Promise<string[]> {
@@ -84,7 +120,7 @@ export class ScanService {
       const concurrency = Math.max(1, Math.min(requestedConcurrency ?? this.requestedConcurrency, 8));
       await Promise.all(Array.from({ length: concurrency }, () => this.processNext(scanId)));
       const scan = this.background.currentScan();
-      if (scan?.id === scanId && scan.status === "running" && scan.pendingFiles.length === 0) {
+      if (scan?.id === scanId && scan.status === "running" && scan.discoveryComplete !== false && scan.pendingFiles.length === 0) {
         scan.status = "completed";
         scan.currentStage = "Complete";
         scan.currentFile = "Local analysis complete";
@@ -112,6 +148,7 @@ export class ScanService {
       this.idleWaiters.splice(0).forEach((resolve) => resolve());
       const replacement = this.background.currentScan();
       if (replacement?.id !== scanId && replacement?.status === "running") void this.process(replacement.id);
+      else if (replacement?.id === scanId && replacement.status === "running" && replacement.pendingFiles.length > 0) void this.process(scanId);
     }
   }
 

@@ -1,4 +1,4 @@
-import { Clock3, Cpu, Database, Gauge, Pause, Play, Square, TimerReset } from "lucide-react";
+import { Clock3, Cpu, Database, Gauge, Layers3, Pause, Play, Square, TimerReset, Zap } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { Button, Panel } from "../components/ui";
@@ -11,6 +11,7 @@ export default function FullScan() {
   const { fullScan } = useScan();
   const scan = useSecurityStore((state) => state.scan);
   const performanceMode = useSecurityStore((state) => state.performanceMode);
+  const [insightTab, setInsightTab] = useState<"scheduler" | "performance">("scheduler");
   const [now, setNow] = useState(Date.now());
   useEffect(() => { if (!scan.active) return; const timer = window.setInterval(() => setNow(Date.now()), 1_000); return () => window.clearInterval(timer); }, [scan.active]);
   const progress = scan.total ? (scan.completed / scan.total) * 100 : 0;
@@ -43,17 +44,45 @@ export default function FullScan() {
       <Meta icon={Database} label="Process memory" value={formatBytes(scan.memoryBytes ?? 0)} />
       <Meta icon={Gauge} label="Current throughput" value={`${scan.throughputPerSecond ?? 0} files/s`} />
     </section>
-    <Panel className="full-scan-panel">
-      <div className="scan-center">
-        <div className="scan-state"><Database size={16} /> Intelligent scheduler</div>
-        <div className="scan-stats"><span><strong>{scan.workersActive ?? 0} / {scan.workersTotal ?? 0}</strong> workers active</span><span><strong>{scan.priorityRemaining?.critical ?? 0}</strong> critical queued</span><span><strong>{scan.priorityRemaining?.high ?? 0}</strong> high queued</span><span><strong>{scan.priorityRemaining?.medium ?? 0}</strong> medium queued</span><span><strong>{(scan.priorityRemaining?.low ?? 0) + (scan.priorityRemaining?.inventory ?? 0)}</strong> low and inventory</span></div>
-        <div className="scan-stats"><span><strong>{cacheHitRate}</strong> cache hit rate</span><span><strong>{scan.cacheSkipped ?? 0}</strong> unchanged skipped</span><span><strong>{scan.forensicCount ?? 0}</strong> forensic analyzed</span><span><strong>{scan.errorCount ?? 0}</strong> inaccessible or failed</span></div>
+    <Panel className="scan-insights-panel">
+      <div className="scan-insights-header">
+        <div>
+          <div className="scan-state">{insightTab === "scheduler" ? <Database size={16} /> : <Gauge size={16} />}{insightTab === "scheduler" ? "Intelligent scheduler" : "Performance level"}</div>
+          <h3>{insightTab === "scheduler" ? "Live queue and analysis capacity" : `${performanceLabel(performanceMode)} scan profile`}</h3>
+        </div>
+        <div className="scan-insight-tabs" role="tablist" aria-label="Full scan insights">
+          <button type="button" className={insightTab === "scheduler" ? "active" : ""} role="tab" aria-selected={insightTab === "scheduler"} onClick={() => setInsightTab("scheduler")}><Layers3 size={15} />Scheduler</button>
+          <button type="button" className={insightTab === "performance" ? "active" : ""} role="tab" aria-selected={insightTab === "performance"} onClick={() => setInsightTab("performance")}><Zap size={15} />Performance</button>
+        </div>
       </div>
+      {insightTab === "scheduler" ? <div className="scheduler-insights" role="tabpanel">
+        <dl className="scheduler-metrics">
+          <div><dt>Workers</dt><dd>{scan.workersActive ?? 0} <span>/ {scan.workersTotal ?? 0} active</span></dd></div>
+          <div><dt>Cache hit rate</dt><dd>{cacheHitRate}</dd></div>
+          <div><dt>Unchanged skipped</dt><dd>{scan.cacheSkipped ?? 0}</dd></div>
+          <div><dt>Forensic analyzed</dt><dd>{scan.forensicCount ?? 0}</dd></div>
+          <div><dt>Unavailable files</dt><dd>{scan.errorCount ?? 0}</dd></div>
+        </dl>
+        <div className="priority-queue" aria-label="Priority queue">
+          <span><i className="critical" />Critical <strong>{scan.priorityRemaining?.critical ?? 0}</strong></span>
+          <span><i className="high" />High <strong>{scan.priorityRemaining?.high ?? 0}</strong></span>
+          <span><i className="medium" />Medium <strong>{scan.priorityRemaining?.medium ?? 0}</strong></span>
+          <span><i className="low" />Low and inventory <strong>{(scan.priorityRemaining?.low ?? 0) + (scan.priorityRemaining?.inventory ?? 0)}</strong></span>
+        </div>
+      </div> : <div className="performance-insights" role="tabpanel">
+        <div className={`performance-emblem ${performanceMode}`}><Gauge size={25} /></div>
+        <div className="performance-copy"><span>Active profile</span><strong>{performanceLabel(performanceMode)}</strong><p>{performanceDescription(performanceMode)}</p></div>
+        <dl className="performance-details">
+          <div><dt>Scan depth</dt><dd>{performanceMode === "light" ? "Focused locations" : performanceMode === "deep" ? "All accessible files" : "Common locations"}</dd></div>
+          <div><dt>Worker allocation</dt><dd>{performanceMode === "light" ? "1 worker" : performanceMode === "deep" ? "Up to 8 workers" : "Up to 4 workers"}</dd></div>
+        </dl>
+      </div>}
     </Panel>
   </motion.div>;
 }
 
 function Meta({ icon: Icon, label, value }: { icon: typeof Clock3; label: string; value: string }) { return <Panel className="meta-card"><Icon size={18} /><div><span>{label}</span><strong>{value}</strong></div></Panel>; }
+function performanceLabel(mode: "light" | "balanced" | "deep"): string { return mode.charAt(0).toUpperCase() + mode.slice(1); }
 function performanceDescription(mode: "light" | "balanced" | "deep"): string { return mode === "light" ? "Light mode reviews important user, startup, and program-data locations." : mode === "deep" ? "Deep mode reviews every accessible file on fixed and removable drives, including AppData." : "Balanced mode reviews common user, AppData, system, and installed-program locations."; }
 function formatDuration(milliseconds: number): string { const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000)); const hours = Math.floor(totalSeconds / 3_600); const minutes = Math.floor(totalSeconds % 3_600 / 60); const seconds = totalSeconds % 60; return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`; }
 function formatBytes(bytes: number): string { return bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : "-"; }

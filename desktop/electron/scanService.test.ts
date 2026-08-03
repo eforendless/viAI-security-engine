@@ -43,6 +43,21 @@ test("large scans checkpoint progress without persisting every file", async () =
   assert.ok(repository.saves <= 6, `expected bounded checkpoint writes, received ${repository.saves}`);
 });
 
+test("discovery-backed scans stay active until discovery completes and queued files drain", async () => {
+  const repository = new MemoryScanRepository();
+  let complete: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { if (event === "scanCompleted") complete?.(); });
+  const scan = await service.start("full", "All accessible PC files", [], 1, false);
+  assert.equal(repository.scan?.status, "running");
+  assert.equal(repository.scan?.discoveryComplete, false);
+  await service.addCandidates(scan.id, ["C:\\samples\\candidate.exe"]);
+  await service.finishDiscovery(scan.id);
+  await completed;
+  assert.equal(repository.scan?.status, "completed");
+  assert.equal(repository.scan?.filesCompleted, 1);
+});
+
 test("a replacement scan starts after a cancelled worker releases the processing lock", async () => {
   const repository = new MemoryScanRepository();
   let releaseFirstAnalysis: (() => void) | undefined;

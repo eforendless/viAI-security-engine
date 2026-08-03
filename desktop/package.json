@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -80,6 +80,7 @@
     ],
     "win": {
       "icon": "public/icon.ico",
+      "artifactName": "viAI.Security.Engine.Setup.${version}.${ext}",
       "target": [
         {
           "target": "nsis",

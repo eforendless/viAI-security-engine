@@ -147,8 +147,8 @@ function AppRoutes() {
     let active = true;
     const syncBackground = (value: unknown) => {
       if (!active || !value || typeof value !== "object") return;
-      const snapshot = value as { settings?: Record<string, unknown>; activeScan?: Record<string, unknown>; history?: unknown[]; activeMonitors?: unknown[] };
-      useSecurityStore.getState().hydrateBackground(snapshot.settings ?? {}, snapshot.activeScan, snapshot.history, snapshot.activeMonitors);
+      const snapshot = value as { settings?: Record<string, unknown>; activeScan?: Record<string, unknown>; history?: unknown[]; activeMonitors?: unknown[]; scanCacheEntries?: unknown };
+      useSecurityStore.getState().hydrateBackground(snapshot.settings ?? {}, snapshot.activeScan, snapshot.history, snapshot.activeMonitors, snapshot.scanCacheEntries);
     };
     void window.viai?.background.snapshot().then(syncBackground);
     return window.viai?.background.onChanged(syncBackground);

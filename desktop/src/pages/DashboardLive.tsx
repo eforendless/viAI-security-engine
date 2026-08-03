@@ -1,36 +1,54 @@
-import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { ArrowRight, Files, Radar, ShieldCheck, TriangleAlert } from "lucide-react";
-import { Link } from "react-router-dom";
-import { Panel, RiskBadge } from "../components/ui";
-import { pageMotion } from "../animations/motion";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import { pageMotion } from "../animations/motion";
 import { useSecurityStore } from "../store/securityStore";
+import { ActivityCard, DeviceInformationCard, HardwareCard, ProtectionCard, QuickActions, RecentActivity, RiskDistributionCard, ScanQueueCard, SecuritySummary, StatisticsCard, StorageCard, type AnalysisItem, type SystemOverview } from "../components/dashboard/OverviewCards";
 
 export default function DashboardLive() {
-  const { history, scan, engineOnline, downloadMonitoring, usbMonitoring, executableMonitoring } = useSecurityStore();
-  const analyzedFiles = history.length + (scan.active ? scan.completed : 0);
-  const investigation = history.filter((item) => item.finalRiskScore > 25).length + (scan.active ? scan.investigationCount : 0);
-  const distribution = [
-    { name: "Low", value: history.filter((item) => item.riskLevel === "low").length, color: "#4ca577" },
-    { name: "Medium", value: history.filter((item) => item.riskLevel === "medium").length, color: "#e2a23d" },
-    { name: "High", value: history.filter((item) => item.riskLevel === "high").length, color: "#d85d68" },
-  ];
-  const activity = Array.from({ length: 7 }, (_, offset) => {
-    const date = new Date();
-    date.setHours(0, 0, 0, 0);
-    date.setDate(date.getDate() - (6 - offset));
-    return { day: date.toLocaleDateString(undefined, { weekday: "short" }), value: history.filter((item) => new Date(item.analyzedAt).toDateString() === date.toDateString()).length };
-  });
-  const enabledSensors = [downloadMonitoring, usbMonitoring, executableMonitoring].filter(Boolean).length;
+  const navigate = useNavigate();
+  const { history, scan, engineOnline, cacheEntries, downloadMonitoring, usbMonitoring, executableMonitoring } = useSecurityStore();
+  const [system, setSystem] = useState<SystemOverview>();
+  const [version, setVersion] = useState("Not Available");
+  const [query, setQuery] = useState("");
+  const [riskFilter, setRiskFilter] = useState("all");
+  const deferredQuery = useDeferredValue(query);
 
-  return <motion.div {...pageMotion} className="page-stack">
-    <section className="hero-strip"><div><p className="eyebrow">PROTECTION OVERVIEW</p><h2>{engineOnline ? "Your device is being watched." : "Connect the local engine to begin."}</h2><p>Monitoring sensors watch new downloads, executable file activity, and removable USB storage. viAI evaluates local evidence before recommending deeper investigation.</p></div><Link className="button primary" to="/quick-scan">Run quick scan <ArrowRight size={16} /></Link></section>
-    <section className="metrics-grid"><Metric icon={ShieldCheck} label="Protection" value={engineOnline ? "Active" : "Offline"} detail={engineOnline ? "Local engine connected" : "Start the local engine service"} tone={engineOnline ? "success" : "warning"} /><Metric icon={Files} label="Files analyzed" value={analyzedFiles.toString()} detail={scan.active ? `${scan.completed} in the current scan` : "Stored local analyses"} tone="blue" /><Metric icon={TriangleAlert} label="Needs investigation" value={investigation.toString()} detail={scan.active ? `${scan.investigationCount} in the current scan` : "Evidence warrants a closer look"} tone={investigation ? "warning" : "success"} /><Metric icon={Radar} label="Monitoring" value={`${enabledSensors} / 3`} detail={`${enabledSensors} sensors enabled`} tone="indigo" /></section>
-    <section className="dashboard-grid"><Panel className="chart-panel"><div className="panel-heading"><div><h3>Analysis activity</h3><p>Last seven days</p></div><span className="subtle-value">{history.length} files</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={activity}><defs><linearGradient id="activityGradient" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#377bd6" stopOpacity={0.32} /><stop offset="100%" stopColor="#377bd6" stopOpacity={0} /></linearGradient></defs><Tooltip /><Area type="monotone" dataKey="value" stroke="#377bd6" strokeWidth={2.5} fill="url(#activityGradient)" /></AreaChart></ResponsiveContainer></div></Panel><Panel className="distribution-panel"><div className="panel-heading"><div><h3>Risk distribution</h3><p>Local analysis results</p></div></div><div className="donut-wrap"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={distribution} dataKey="value" innerRadius={48} outerRadius={70} paddingAngle={4} stroke="none">{distribution.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie></PieChart></ResponsiveContainer><div className="donut-label"><strong>{history.length}</strong><span>results</span></div></div><div className="legend">{distribution.map((item) => <span key={item.name}><i style={{ background: item.color }} />{item.name}</span>)}</div></Panel></section>
-    <Panel className="recent-panel"><div className="panel-heading"><div><h3>Recent analyses</h3><p>Evidence is retained locally for review.</p></div><Link to="/history" className="text-link">View history <ArrowRight size={15} /></Link></div>{history.length === 0 ? <div className="empty-state"><ShieldCheck size={30} /><div><strong>No analyses yet</strong><p>Run a quick scan or wait for a monitored executable to start building local history.</p></div></div> : <div className="table-list">{history.slice(0, 4).map((item) => <div className="history-row" key={item.id}><div className="file-dot">{item.metadata.extension?.slice(1, 4) || "file"}</div><div className="file-cell"><strong>{item.filePath.split(/[\\/]/).pop()}</strong><span>{item.filePath}</span></div><RiskBadge risk={item.riskLevel} /><strong className="score-cell">{item.finalRiskScore}</strong></div>)}</div>}</Panel>
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try { const overview = await window.viai?.system.overview(); if (active && overview) setSystem(overview as SystemOverview); } catch { /* Unavailable system details remain explicitly unavailable. */ }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    void window.viai?.application.version().then((next) => { if (active) setVersion(next); });
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
+  const aggregates = useMemo(() => buildAggregates(history as AnalysisItem[], cacheEntries, scan.cacheSkipped, scan.active), [history, cacheEntries, scan.cacheSkipped, scan.active]);
+  const latest = history[0] as AnalysisItem | undefined;
+  const protectionActive = engineOnline && (downloadMonitoring || usbMonitoring || executableMonitoring);
+  const startFileScan = async () => { const path = await window.viai?.chooseFile(); if (path) await window.viai?.scans.start("quick", path); };
+  const startFolderScan = async () => { const path = await window.viai?.chooseFolder(); if (path) await window.viai?.scans.start("folder", path); };
+
+  return <motion.div {...pageMotion} className="page-stack security-overview-page">
+    <header className="security-overview-heading"><div><p className="eyebrow">LOCAL SECURITY CONTROL CENTER</p><h2>Security Overview</h2><p>Offline endpoint visibility, local evidence, and practical next actions for this computer.</p></div><span className={protectionActive ? "overview-status healthy" : "overview-status warning"}>{protectionActive ? "Protection active" : "Protection needs review"}</span></header>
+    <SecuritySummary active={protectionActive} investigations={aggregates.stats.investigated} lastScan={latest?.analyzedAt} />
+    <section className="overview-primary-grid"><DeviceInformationCard system={system} /><ProtectionCard engineOnline={engineOnline} protectionEnabled={protectionActive} version={version} lastScan={latest?.analyzedAt} /></section>
+    <StatisticsCard stats={aggregates.stats} />
+    <section className="overview-chart-grid"><ActivityCard activity={aggregates.activity} /><RiskDistributionCard values={aggregates.distribution} /></section>
+    <section className="overview-secondary-grid"><StorageCard storage={system?.storage} /><HardwareCard system={system} /><ScanQueueCard scan={scan} /></section>
+    <QuickActions onScanFile={() => void startFileScan()} onScanFolder={() => void startFolderScan()} onUpdate={() => void window.viai?.updates.check()} />
+    <RecentActivity items={history as AnalysisItem[]} query={deferredQuery} onQuery={setQuery} riskFilter={riskFilter} onRiskFilter={setRiskFilter} onOpen={(id) => navigate(`/details/${id}`)} />
   </motion.div>;
 }
 
-function Metric({ icon: Icon, label, value, detail, tone }: { icon: typeof ShieldCheck; label: string; value: string; detail: string; tone: string }) {
-  return <motion.div className="metric-card" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}><span className={`metric-icon ${tone}`}><Icon size={20} /></span><div><p>{label}</p><strong>{value}</strong><small>{detail}</small></div></motion.div>;
+function buildAggregates(history: AnalysisItem[], cached: number, activeSkipped: number | undefined, scanActive: boolean) {
+  const extensions = { executables: new Set([".exe", ".com", ".scr", ".msi", ".msp", ".appx"]), dlls: new Set([".dll", ".ocx", ".cpl"]), drivers: new Set([".sys", ".drv"]), scripts: new Set([".ps1", ".bat", ".cmd", ".js", ".vbs", ".py", ".hta"]), documents: new Set([".doc", ".docx", ".docm", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".pdf"]), archives: new Set([".zip", ".rar", ".7z", ".tar", ".gz"]), media: new Set([".mp3", ".mp4", ".mkv", ".avi", ".jpg", ".jpeg", ".png", ".gif"]) };
+  const count = (group: Set<string>) => history.filter((item) => group.has(item.metadata.extension?.toLowerCase() ?? "")).length;
+  const investigated = history.filter((item) => item.finalRiskScore > 25 || /sandbox|analysis|investigat/i.test(item.recommendation)).length;
+  const stats = { total: history.length, executables: count(extensions.executables), dlls: count(extensions.dlls), drivers: count(extensions.drivers), scripts: count(extensions.scripts), documents: count(extensions.documents), archives: count(extensions.archives), media: count(extensions.media), suspicious: history.filter((item) => item.finalRiskScore > 25).length, investigated, skipped: scanActive ? activeSkipped : undefined, cached };
+  const distribution = [{ name: "Low", value: history.filter((item) => item.finalRiskScore <= 25).length, color: "#3f9d72" }, { name: "Medium", value: history.filter((item) => item.finalRiskScore > 25 && item.finalRiskScore <= 60).length, color: "#d99b31" }, { name: "High", value: history.filter((item) => item.finalRiskScore > 60 && item.finalRiskScore <= 80).length, color: "#d35c63" }, { name: "Critical", value: history.filter((item) => item.finalRiskScore > 80).length, color: "#a83953" }, { name: "Unknown", value: history.filter((item) => !Number.isFinite(item.finalRiskScore)).length, color: "#8291a8" }];
+  const activity = Array.from({ length: 30 }, (_, index) => { const date = new Date(); date.setHours(0, 0, 0, 0); date.setDate(date.getDate() - (29 - index)); return { day: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }), value: history.filter((item) => new Date(item.analyzedAt).toDateString() === date.toDateString()).length }; });
+  return { stats, distribution, activity };
 }

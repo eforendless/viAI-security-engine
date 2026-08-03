@@ -9,6 +9,7 @@ import { DeviceSecurityService, type DeviceSecuritySnapshot } from "./deviceSecu
 import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate, type PersistedScanState } from "./backgroundService";
 import { ScanService, type ScanEventName } from "./scanService";
 import { StartupManager, type StartupProgress } from "./startup";
+import { collectSystemOverview } from "./systemOverview";
 import { UpdateService } from "./updater";
 
 const execFileAsync = promisify(execFile);
@@ -261,6 +262,7 @@ ipcMain.handle("startup:retry", () => runStartup());
 ipcMain.handle("startup:exit", () => { quitting = true; app.quit(); });
 ipcMain.handle("startup:complete-transition", () => completeStartupTransition());
 ipcMain.handle("application:version", () => app.getVersion());
+ipcMain.handle("system:overview", () => collectSystemOverview(app.getPath("userData")));
 ipcMain.handle("updates:snapshot", () => updateService?.current());
 ipcMain.handle("updates:check", () => updateService?.check());
 ipcMain.handle("updates:download", () => updateService?.download());

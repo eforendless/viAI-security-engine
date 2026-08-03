@@ -33,6 +33,7 @@ export interface ScanState {
 interface SecurityState {
   engineOnline: boolean;
   history: HistoryItem[];
+  cacheEntries: number;
   scan: ScanState;
   downloadMonitoring: boolean;
   usbMonitoring: boolean;
@@ -53,7 +54,7 @@ interface SecurityState {
   setDarkMode(value: boolean): void;
   setPerformanceMode(value: SecurityState["performanceMode"]): void;
   setThreadCount(value: number): void;
-  hydrateBackground(settings: Record<string, unknown>, scan?: Record<string, unknown>, history?: unknown[], activeMonitors?: unknown[]): void;
+  hydrateBackground(settings: Record<string, unknown>, scan?: Record<string, unknown>, history?: unknown[], activeMonitors?: unknown[], scanCacheEntries?: unknown): void;
 }
 
 const idleScan: ScanState = { active: false, paused: false, cancelled: false, mode: "quick", target: "", total: 0, completed: 0, investigationCount: 0, currentPath: "" };
@@ -61,6 +62,7 @@ const idleScan: ScanState = { active: false, paused: false, cancelled: false, mo
 export const useSecurityStore = create<SecurityState>((set) => ({
   engineOnline: false,
   history: [],
+  cacheEntries: 0,
   scan: idleScan,
   downloadMonitoring: false,
   usbMonitoring: false,
@@ -81,7 +83,7 @@ export const useSecurityStore = create<SecurityState>((set) => ({
   setDarkMode: (darkMode) => set({ darkMode }),
   setPerformanceMode: (performanceMode) => set({ performanceMode }),
   setThreadCount: (threadCount) => set({ threadCount }),
-  hydrateBackground: (settings, remoteScan, persistedHistory, activeMonitors) => set((state) => {
+  hydrateBackground: (settings, remoteScan, persistedHistory, activeMonitors, scanCacheEntries) => set((state) => {
     const status = typeof remoteScan?.status === "string" ? remoteScan.status : undefined;
     const mode = remoteScan?.mode === "quick" || remoteScan?.mode === "full" || remoteScan?.mode === "folder" ? remoteScan.mode : state.scan.mode;
     const number = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -92,6 +94,7 @@ export const useSecurityStore = create<SecurityState>((set) => ({
       performanceMode: "performanceMode" in settings ? settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced" : state.performanceMode,
       threadCount: "maximumParallelScans" in settings ? number(settings.maximumParallelScans, 0) || 4 : state.threadCount,
       history: persistedHistory ? historyFromBackground(persistedHistory) : state.history,
+      cacheEntries: number(scanCacheEntries, state.cacheEntries),
       downloadMonitoring: Array.isArray(activeMonitors) ? monitors.has("download-files") : state.downloadMonitoring,
       usbMonitoring: Array.isArray(activeMonitors) ? monitors.has("device-security") : state.usbMonitoring,
       executableMonitoring: Array.isArray(activeMonitors) ? monitors.has("filesystem-candidates") : state.executableMonitoring,
@@ -115,5 +118,5 @@ function historyFromBackground(records: unknown[]): HistoryItem[] {
     const report = source.report as Partial<EngineAnalysis>;
     if (typeof report.filePath !== "string" || typeof report.analyzedAt !== "string" || typeof report.finalRiskScore !== "number" || !report.hashes || !report.metadata) return [];
     return [{ ...report, id: source.id } as HistoryItem];
-  }).slice(0, 500);
+  });
 }

@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld("viai", {
     version: () => ipcRenderer.invoke("application:version") as Promise<string>,
     clearLocalData: () => ipcRenderer.invoke("application:clear-local-data") as Promise<void>,
   },
+  system: {
+    overview: () => ipcRenderer.invoke("system:overview") as Promise<unknown>,
+  },
   updates: {
     snapshot: () => ipcRenderer.invoke("updates:snapshot") as Promise<unknown>,
     check: () => ipcRenderer.invoke("updates:check") as Promise<unknown>,

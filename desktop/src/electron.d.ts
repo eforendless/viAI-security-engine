@@ -7,6 +7,9 @@ declare global {
         version(): Promise<string>;
         clearLocalData(): Promise<void>;
       };
+      system: {
+        overview(): Promise<unknown>;
+      };
       updates: {
         snapshot(): Promise<unknown>;
         check(): Promise<unknown>;

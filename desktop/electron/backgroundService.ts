@@ -65,6 +65,7 @@ export interface PersistedScanState {
 export interface BackgroundSnapshot {
   settings: BackgroundSettings;
   history: BackgroundHistoryRecord[];
+  scanCacheEntries: number;
   activeMonitors: string[];
   activeScan?: Omit<PersistedScanState, "pendingFiles">;
 }
@@ -115,7 +116,7 @@ export class BackgroundService {
     return this.snapshot();
   }
 
-  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: [...this.history], activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined }; }
+  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: [...this.history], scanCacheEntries: this.scanCache.size, activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined }; }
   currentScan(): PersistedScanState | undefined { return this.activeScan ? { ...this.activeScan, pendingFiles: [...this.activeScan.pendingFiles] } : undefined; }
   async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); await this.persist(); return this.publish(); }); }
   async restoreRecommended(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...recommendedSettings }; await this.apply(); await this.persist(); return this.publish(); }); }

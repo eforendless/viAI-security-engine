@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.3.7",
+  "version": "0.3.8",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -15,6 +15,7 @@
     "publish:github": "npm run build && electron-builder --win nsis --x64 --publish always",
     "start": "npm run build && electron .",
     "lint": "eslint .",
+    "test": "npm run build && node scripts/test-assessment-presentation.mjs && node --test dist-electron/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

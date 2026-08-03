@@ -1,5 +1,13 @@
 export type AssessmentModel = "v0.3" | "legacy";
 export type AssessmentTone = "safe" | "info" | "warning" | "danger" | "neutral";
+export type AssessmentHistoryCategory = "needs-investigation" | "monitoring" | "no-action" | "legacy";
+export type UserAssessmentHistoryFilter = "all" | Exclude<AssessmentHistoryCategory, "legacy">;
+export const assessmentHistoryFilters: readonly { readonly value: UserAssessmentHistoryFilter; readonly label: string }[] = [
+  { value: "all", label: "All assessments" },
+  { value: "needs-investigation", label: "Needs investigation" },
+  { value: "monitoring", label: "Monitoring" },
+  { value: "no-action", label: "No action needed" },
+];
 
 export interface DisplayMetric {
   readonly label: string;
@@ -23,6 +31,7 @@ export interface AssessmentPresentation {
   readonly displayPriority: DisplayMetric;
   readonly shortExplanation: string;
   readonly consumerEvidence: readonly ConsumerEvidence[];
+  readonly requiresEscalation: boolean;
   readonly suspicion: { readonly score: number | undefined; readonly level: string };
   readonly trust: { readonly score: number | undefined; readonly level: string };
   readonly confidence: { readonly score: number | undefined; readonly level: string };
@@ -85,6 +94,7 @@ export function presentAssessment(record: unknown, engineVersionFallback = "Not 
       displayPriority: displayPriority(priority),
       shortExplanation: explanation(verdict, recommendation, importantEvidence),
       consumerEvidence: importantEvidence.map(presentEvidence),
+      requiresEscalation: object(canonicalAssessment.escalation).requested === true,
       suspicion,
       trust,
       confidence,
@@ -108,14 +118,15 @@ export function presentAssessment(record: unknown, engineVersionFallback = "Not 
     model: "legacy",
     modelLabel: "Legacy v0.1/v0.2 score model",
     verdict: "LEGACY SCORE MODEL",
-    status: { label: "Legacy assessment", tone: "neutral" },
-    displayRecommendation: { label: "Review retained recommendation", tone: "neutral" },
+    status: { label: "Assessment unavailable", tone: "neutral" },
+    displayRecommendation: { label: "Open details to review", tone: "neutral" },
     displaySuspicion: { label: "Legacy score", tone: "neutral" },
     displayConfidence: { label: "Not recorded", tone: "neutral" },
     displayTrust: { label: "Not recorded", tone: "neutral" },
     displayPriority: { label: "Not recorded", tone: "neutral" },
     shortExplanation: "This historical record uses the prior score model. Its original data is retained for review.",
     consumerEvidence: importantEvidence.map(presentEvidence),
+    requiresEscalation: false,
     suspicion: { score: legacyRisk, level: legacyRisk === undefined ? "not recorded" : legacyRisk <= 25 ? "low" : legacyRisk <= 60 ? "medium" : "high" },
     trust: { score: number(professionalTrust.score, number(analysis.trustScore, number(history.trustScore, undefined))), level: string(professionalTrust.level) ?? "not recorded" },
     confidence: { score: number(professionalConfidence.score, number(analysis.confidence, undefined)), level: "not recorded" },
@@ -128,6 +139,14 @@ export function presentAssessment(record: unknown, engineVersionFallback = "Not 
     versions: { engine, ruleSet: "Not recorded", trustPolicy: "Not recorded", assessmentSchema: "Legacy" },
     details,
   };
+}
+
+export function getAssessmentHistoryCategory(presentation: AssessmentPresentation): AssessmentHistoryCategory {
+  if (presentation.model !== "v0.3") return "legacy";
+  const investigationRequired = presentation.requiresEscalation || ["MEDIUM", "HIGH", "URGENT"].includes(presentation.priority) || ["REVIEW", "DYNAMIC_ANALYSIS", "SANDBOX", "AI_ANALYSIS"].includes(presentation.recommendation) || ["SUSPICIOUS", "HIGHLY_SUSPICIOUS"].includes(presentation.verdict);
+  if (investigationRequired) return "needs-investigation";
+  if (presentation.recommendation === "MONITOR") return "monitoring";
+  return "no-action";
 }
 
 function displayStatus(verdict: string): DisplayMetric {

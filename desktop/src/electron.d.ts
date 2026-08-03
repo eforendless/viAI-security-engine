@@ -5,6 +5,7 @@ declare global {
     viai?: {
       application: {
         version(): Promise<string>;
+        engineVersion(): Promise<string>;
         clearLocalData(): Promise<void>;
       };
       system: {

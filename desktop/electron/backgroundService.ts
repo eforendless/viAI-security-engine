@@ -104,7 +104,7 @@ export class BackgroundService {
   private historyDirty = false;
   private historyFlushTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void) { this.historyPath = join(dirname(dataPath), "background-history.json"); this.scanCachePath = join(dirname(dataPath), "scan-cache.json"); }
+  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void, private readonly engineVersion = "Unavailable") { this.historyPath = join(dirname(dataPath), "background-history.json"); this.scanCachePath = join(dirname(dataPath), "scan-cache.json"); }
 
   async initialize(): Promise<BackgroundSnapshot> {
     const stored = await this.read();
@@ -139,7 +139,7 @@ export class BackgroundService {
       const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
-      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: "0.1.6", detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
+      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: analysis.recommendation, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
       if (deferPersistence) {
         this.historyDirty = true;
         this.scheduleHistoryFlush();
@@ -164,7 +164,7 @@ export class BackgroundService {
     });
   }
 
-  async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); if (this.history.some((record) => record.id === id)) return; this.history = [{ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: "0.1.6", detail }, ...this.history]; await this.persistHistory(); this.publish(); }); }
+  async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); if (this.history.some((record) => record.id === id)) return; this.history = [{ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: this.engineVersion, detail }, ...this.history]; await this.persistHistory(); this.publish(); }); }
 
   private async apply(): Promise<void> {
     const enabled = this.settings.backgroundProtection === true;

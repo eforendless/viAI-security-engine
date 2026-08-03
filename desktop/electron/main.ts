@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +57,15 @@ function enginePaths(): { entry: string; workingDirectory: string } {
   }
   const workingDirectory = join(__dirname, "..", "..");
   return { entry: join(workingDirectory, "dist", "src", "index.js"), workingDirectory };
+}
+
+function engineVersion(): string {
+  try {
+    const manifest = JSON.parse(readFileSync(join(enginePaths().workingDirectory, "package.json"), "utf8")) as { version?: unknown };
+    return typeof manifest.version === "string" ? manifest.version : "Unavailable";
+  } catch {
+    return "Unavailable";
+  }
 }
 
 async function startEngine(): Promise<void> {
@@ -201,7 +210,7 @@ function configureStartup(): StartupManager {
   manager.register([
     { id: "configuration", name: "Loading application configuration", weight: 5, execute: async () => { if (!process.env.VITE_DEV_SERVER_URL && !existsSync(enginePaths().entry)) throw new Error("The packaged local engine is missing."); } },
     { id: "engine", name: "Initializing analysis, rules, and trust engines", weight: 25, dependencies: ["configuration"], execute: async () => { await startEngine(); await waitForEngineReady(); } },
-    { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["engine"], execute: async () => { backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
+    { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["engine"], execute: async () => { backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground, engineVersion()); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
     { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["persistence"], execute: async () => { deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; return { monitorUsbStorage: settings?.monitorUsbStorage === true, monitorUsbInsertion: settings?.monitorUsbInsertion === true, automaticallyScanUsb: settings?.automaticallyScanUsb === true }; }); await deviceSecurity.start(); } },
     { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType) => analyzeEngineFile(filePath, scanType), publishScan); await scanService.recover(); } },
     { id: "notifications", name: "Preparing local notifications", weight: 5, dependencies: ["persistence"], execute: async () => { Notification.isSupported(); } },
@@ -262,6 +271,7 @@ ipcMain.handle("startup:retry", () => runStartup());
 ipcMain.handle("startup:exit", () => { quitting = true; app.quit(); });
 ipcMain.handle("startup:complete-transition", () => completeStartupTransition());
 ipcMain.handle("application:version", () => app.getVersion());
+ipcMain.handle("engine:version", () => engineVersion());
 ipcMain.handle("system:overview", () => collectSystemOverview(app.getPath("userData")));
 ipcMain.handle("updates:snapshot", () => updateService?.current());
 ipcMain.handle("updates:check", () => updateService?.check());

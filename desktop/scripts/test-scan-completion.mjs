@@ -41,5 +41,25 @@ assert.equal(state.lastCompletedScan?.status, "completed");
 assert.equal(state.lastCompletedScan?.id, "completed-scan");
 assert.equal(state.lastCompletedScan?.completed, 842_531);
 
+const completedReplacement = { ...replacement, status: "completed", progress: 100, completedAt: "2026-08-01T10:21:00.000Z", elapsedMs: 60_000 };
+useSecurityStore.getState().hydrateBackground({}, completedReplacement, [], [], 0, completedReplacement);
+assert.equal(useSecurityStore.getState().scan.active, false);
+
+const finalizing = { ...completed, id: "finalizing-scan", status: "finalizing", progress: 99, currentStage: "Finalizing", completedAt: undefined, elapsedMs: undefined };
+useSecurityStore.getState().hydrateBackground({}, finalizing);
+state = useSecurityStore.getState();
+assert.equal(state.scan.id, "finalizing-scan");
+assert.equal(state.scan.active, true);
+assert.equal(state.scan.progress, 99);
+
+const completedFinalizing = { ...finalizing, status: "completed", progress: 100, completedAt: "2026-08-01T10:19:00.000Z", elapsedMs: 1_140_000 };
+useSecurityStore.getState().hydrateBackground({}, completedFinalizing, [], [], 0, completedFinalizing);
+state = useSecurityStore.getState();
+assert.equal(state.scan.active, false);
+assert.equal(state.scan.progress, 0);
+assert.equal(state.lastCompletedScan?.id, "finalizing-scan");
+useSecurityStore.getState().hydrateBackground({}, { ...finalizing, status: "running" });
+assert.equal(useSecurityStore.getState().scan.active, false);
+
 await vite.close();
 console.log("scan completion presentation tests passed");

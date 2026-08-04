@@ -23,7 +23,7 @@ export class UpdateService {
     autoUpdater.on("update-not-available", () => this.publish({ status: "not-available", message: "This device already has the latest release." }));
     autoUpdater.on("download-progress", (progress) => this.publish({ status: "downloading", percent: Math.round(progress.percent), message: "Downloading update..." }));
     autoUpdater.on("update-downloaded", (info) => this.publish({ status: "downloaded", version: info.version, percent: 100, message: `Version ${info.version} is ready to install.` }));
-    autoUpdater.on("error", () => this.publish({ status: "error", message: "The update could not be completed. Check your connection and try again." }));
+    autoUpdater.on("error", (error) => this.reportError("update", error, "The update could not be completed. Check your connection and try again."));
   }
 
   current(): UpdateSnapshot {
@@ -35,8 +35,8 @@ export class UpdateService {
     this.publish({ status: "checking", message: "Checking GitHub releases..." });
     try {
       await autoUpdater.checkForUpdates();
-    } catch {
-      this.publish({ status: "error", message: "The update check failed. Check your connection and try again." });
+    } catch (error) {
+      this.reportError("check", error, "The update check failed. Check your connection and try again.");
     }
     return this.current();
   }
@@ -46,8 +46,8 @@ export class UpdateService {
     this.publish({ status: "downloading", percent: 0, message: "Downloading update..." });
     try {
       await autoUpdater.downloadUpdate();
-    } catch {
-      this.publish({ status: "error", message: "The update download failed. Check your connection and try again." });
+    } catch (error) {
+      this.reportError("download", error, "The update download failed. Check your connection and try again.");
     }
     return this.current();
   }
@@ -59,5 +59,10 @@ export class UpdateService {
   private publish(update: Omit<UpdateSnapshot, "currentVersion">): void {
     this.snapshotValue = { ...update, currentVersion: app.getVersion() };
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send("updates:changed", this.current());
+  }
+
+  private reportError(operation: string, error: unknown, message: string): void {
+    console.error(`Updater ${operation} failed`, error);
+    this.publish({ status: "error", message });
   }
 }

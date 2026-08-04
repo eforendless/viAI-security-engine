@@ -1,4 +1,4 @@
-export type ScanLifecycleState = "starting" | "running" | "pausing" | "paused" | "resuming" | "cancelling" | "cancelled" | "completed" | "failed";
+export type ScanLifecycleState = "starting" | "running" | "pausing" | "paused" | "resuming" | "cancelling" | "finalizing" | "cancelled" | "completed" | "failed";
 
 export class ScanController {
   readonly abortController = new AbortController();
@@ -50,7 +50,7 @@ export class ScanController {
   }
 
   cancel(): boolean {
-    if (isTerminal(this.currentState) || this.currentState === "cancelling") return false;
+    if (isTerminal(this.currentState) || this.currentState === "cancelling" || this.currentState === "finalizing") return false;
     this.transition("cancelling");
     this.abortController.abort(abortError());
     this.releaseWaiters();

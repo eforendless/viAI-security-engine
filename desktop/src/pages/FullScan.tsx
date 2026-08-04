@@ -25,7 +25,7 @@ export default function FullScan() {
   const isCancelled = scan.status === "cancelled" || scan.cancelled;
   const isFailed = scan.status === "failed";
   const hasSummary = scan.active || isCompleted || isCancelled || isFailed;
-  const progress = isCompleted ? 100 : hasSummary && scan.total ? (scan.completed / scan.total) * 100 : 0;
+  const progress = isCompleted ? 100 : hasSummary ? scan.progress ?? 0 : 0;
   const elapsed = isCompleted ? scan.elapsedMs ?? scanElapsed(scan, scan.completedAt ?? now) : scan.active ? scanElapsed(scan, now) : 0;
   const cacheTotal = hasSummary ? (scan.cacheHits ?? 0) + (scan.cacheMisses ?? 0) : 0;
   const cacheHitRate = cacheTotal ? `${Math.round(((scan.cacheHits ?? 0) / cacheTotal) * 100)}%` : "-";
@@ -34,14 +34,15 @@ export default function FullScan() {
   const isPaused = scan.status === "paused";
   const isResuming = scan.status === "resuming";
   const isCancelling = scan.status === "cancelling";
-  const scanState = isCompleted ? "Scan completed" : isFailed ? "Scan failed" : isCancelled ? "Scan cancelled" : isCancelling ? "Cancelling scan" : isPausing ? "Pausing scan" : isPaused ? "Scan paused" : isResuming ? "Resuming scan" : scan.active ? "Local engine is analyzing" : showCancellationNotice ? "Scan cancelled" : "Ready when you are";
+  const isFinalizing = scan.status === "finalizing";
+  const scanState = isCompleted ? "Scan completed" : isFailed ? "Scan failed" : isCancelled ? "Scan cancelled" : isFinalizing ? "Finalizing scan" : isCancelling ? "Cancelling scan" : isPausing ? "Pausing scan" : isPaused ? "Scan paused" : isResuming ? "Resuming scan" : scan.active ? "Local engine is analyzing" : showCancellationNotice ? "Scan cancelled" : "Ready when you are";
   return <motion.div {...pageMotion} className="page-stack">
     <div className="page-title split-title">
       <div><p className="eyebrow">SYSTEM-WIDE REVIEW</p><h2>Full system scan</h2><p>{performanceDescription(performanceMode)}</p></div>
       {!scan.active && <Button className="primary" onClick={() => void fullScan()}><Play size={17} />Scan entire computer</Button>}
     </div>
     <Panel className="full-scan-panel">
-      <Radar progress={progress} active={scan.active && !isPaused && !isPausing && !isCancelling} />
+      <Radar progress={progress} active={scan.active && !isPaused && !isPausing && !isCancelling && !isFinalizing} />
       <div className="scan-center">
         <div className="scan-state"><span className={scan.active && !isPaused && !isCancelling ? "pulse-dot" : "status-dot"} />{scanState}</div>
         <h3>{hasSummary ? scan.currentPath || "Preparing local analysis" : "System locations are ready for review"}</h3>
@@ -49,7 +50,7 @@ export default function FullScan() {
         <div className="progress-track"><motion.span animate={{ scaleX: progress / 100 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} /></div>
         <div className="scan-stats"><span><strong>{hasSummary ? scan.completed.toLocaleString() : "0"}</strong> files scanned</span><span><strong>{hasSummary ? scan.investigationCount : 0}</strong> need investigation</span><span><strong>{remaining.toLocaleString()}</strong> remaining</span></div>
         <div className="scan-controls">
-          {scan.active ? <>{!isCancelling && <Button disabled={isPausing || isResuming} onClick={() => void (isPaused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{isPaused ? <Play size={16} /> : <Pause size={16} />}{isPaused ? "Resume" : isPausing ? "Pausing..." : isResuming ? "Resuming..." : "Pause"}</Button>}<Button className="danger" disabled={isCancelling} onClick={() => void window.viai?.scans.cancel()}><Square size={15} />{isCancelling ? "Cancelling..." : "Cancel scan"}</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />Start full scan</Button>}
+          {scan.active ? !isFinalizing && <>{!isCancelling && <Button disabled={isPausing || isResuming} onClick={() => void (isPaused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{isPaused ? <Play size={16} /> : <Pause size={16} />}{isPaused ? "Resume" : isPausing ? "Pausing..." : isResuming ? "Resuming..." : "Pause"}</Button>}<Button className="danger" disabled={isCancelling} onClick={() => void window.viai?.scans.cancel()}><Square size={15} />{isCancelling ? "Cancelling..." : "Cancel scan"}</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />Start full scan</Button>}
         </div>
       </div>
     </Panel>
@@ -90,7 +91,7 @@ export default function FullScan() {
         <div className="performance-copy"><span>Active profile</span><strong>{performanceLabel(performanceMode)}</strong><p>{performanceDescription(performanceMode)}</p></div>
         <dl className="performance-details">
           <div><dt>Scan depth</dt><dd>{performanceMode === "light" ? "Focused locations" : performanceMode === "deep" ? "All accessible files" : "Common locations"}</dd></div>
-          <div><dt>Worker allocation</dt><dd>{performanceMode === "light" ? "1 worker" : performanceMode === "deep" ? "Up to 8 workers" : "Up to 4 workers"}</dd></div>
+          <div><dt>Worker allocation</dt><dd>{performanceMode === "light" ? "1 worker" : "Up to 2 workers"}</dd></div>
         </dl>
       </div>}
     </Panel>

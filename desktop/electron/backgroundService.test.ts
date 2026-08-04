@@ -85,6 +85,27 @@ test("background settings migrate legacy scan modes and retain deep mode", async
   }
 });
 
+test("active scan mutations serialize concurrent scheduler updates", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-scan-mutation-"));
+  const path = join(directory, "background-settings.json");
+  try {
+    const service = new BackgroundService(path, async () => undefined, () => undefined);
+    await service.initialize();
+    await service.saveScan({ id: "serialized", mode: "full", target: "Common Windows locations", startedAt: "2026-08-04T12:00:00.000Z", updatedAt: "2026-08-04T12:00:00.000Z", currentFile: "", filesCompleted: 0, filesRemaining: 2, totalFiles: 2, progress: 0, currentStage: "Analyzing", status: "running", investigationCount: 0, pausedDurationMs: 0, pendingFiles: ["C:\\samples\\one.exe", "C:\\samples\\two.exe"] });
+    await Promise.all(["C:\\samples\\one.exe", "C:\\samples\\two.exe"].map((file) => service.mutateActiveScan("serialized", (scan) => {
+      scan.pendingFiles = scan.pendingFiles.filter((candidate) => candidate !== file);
+      scan.filesCompleted = scan.totalFiles - scan.pendingFiles.length;
+      scan.filesRemaining = scan.pendingFiles.length;
+    }, { publish: false })));
+    const scan = service.currentScan();
+    assert.deepEqual(scan?.pendingFiles, []);
+    assert.equal(scan?.filesCompleted, 2);
+    assert.equal(scan?.filesRemaining, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a cancelled scan survives restart with its cancellation diagnostics", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-cancelled-scan-"));
   const path = join(directory, "background-settings.json");

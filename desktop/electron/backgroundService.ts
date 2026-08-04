@@ -35,7 +35,7 @@ export interface BackgroundHistoryRecord {
 }
 export type BackgroundHistorySummary = Omit<BackgroundHistoryRecord, "report">;
 
-export type ScanStatus = "starting" | "running" | "pausing" | "paused" | "resuming" | "cancelling" | "completed" | "cancelled" | "failed";
+export type ScanStatus = "starting" | "running" | "pausing" | "paused" | "resuming" | "cancelling" | "finalizing" | "completed" | "cancelled" | "failed";
 
 export interface PersistedScanState {
   id: string;
@@ -171,6 +171,16 @@ export class BackgroundService {
   async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
   async historyRecord(id: string): Promise<BackgroundHistoryRecord | undefined> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); return this.history.find((record) => record.id === id); }); }
   async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (scan?.status === "completed") this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
+  async mutateActiveScan<T>(scanId: string, mutation: (scan: PersistedScanState) => T, options: SaveScanOptions = {}): Promise<T | undefined> {
+    return this.enqueue(async () => {
+      const scan = this.activeScan;
+      if (!scan || scan.id !== scanId) return undefined;
+      const result = mutation(scan);
+      if (options.persist !== false) await this.persist();
+      if (options.publish !== false) this.publish();
+      return result;
+    });
+  }
   async completeScan(scanId: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { const scan = this.activeScan; if (!scan || scan.id !== scanId || scan.status !== "completed") return this.snapshot(); this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; this.activeScan = undefined; await this.persist(); return this.publish(); }); }
   scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.scanCache.get(cacheKey(filePath)); }
   recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
@@ -317,7 +327,7 @@ function validateScanCacheEntry(value: unknown): ScanCacheEntry | undefined { if
 function validateScan(value: unknown): PersistedScanState | undefined {
   if (!value || typeof value !== "object") return undefined;
   const scan = value as Partial<PersistedScanState>;
-  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["starting", "running", "pausing", "paused", "resuming", "cancelling", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
+  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["starting", "running", "pausing", "paused", "resuming", "cancelling", "finalizing", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
   const number = (candidate: unknown, fallback = 0) => typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? candidate : fallback;
   const priorityRemaining = scan.priorityRemaining && typeof scan.priorityRemaining === "object" ? Object.fromEntries(["critical", "high", "medium", "low", "inventory"].map((band) => [band, number((scan.priorityRemaining as Record<string, unknown>)[band])])) : undefined;
   return {

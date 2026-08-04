@@ -372,12 +372,12 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     files = [target];
   } else if (mode === "folder") {
     if (typeof target !== "string" || !existsSync(target)) throw new Error("Choose an existing folder to scan");
+    const folderTarget = target;
     const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
     const parallel = scanConcurrency(performanceMode, configuredParallel);
     const scan = await scanService.start(mode, target, [], parallel, false);
-    const controller = scanService.controllerFor(scan.id);
-    void streamCandidates([target], false, controller, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve()).then(() => scanService?.finishDiscovery(scan.id));
+    void scanService.discover(scan.id, (controller, onBatch) => streamCandidates([folderTarget], false, controller, onBatch));
     return scan;
   } else {
     const home = homedir();
@@ -386,13 +386,10 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
     const parallel = scanConcurrency(performanceMode, configuredParallel);
     const scan = await scanService.start(mode, target, [], parallel, false);
-    const controller = scanService.controllerFor(scan.id);
-    void (async () => {
-      if (controller?.signal.aborted) return;
+    void scanService.discover(scan.id, async (controller, onBatch) => {
       const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync);
-      await streamCandidates(roots, performanceMode === "deep", controller, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve());
-      if (!controller?.signal.aborted) await scanService?.finishDiscovery(scan.id);
-    })();
+      await streamCandidates(roots, performanceMode === "deep", controller, onBatch);
+    });
     return scan;
   }
   const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
@@ -547,9 +544,7 @@ async function requestRemovableStorageScan(device: DeviceRecord, trigger: Device
   const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
   const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
   const scan = await scanService.start("folder", root, [], scanConcurrency(performanceMode, configuredParallel), false, { source: "removable-media", id: device.id, volume: root, trigger });
-  const controller = scanService.controllerFor(scan.id);
-  void streamCandidates([root], false, controller, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve())
-    .then(() => controller?.signal.aborted ? undefined : scanService?.finishDiscovery(scan.id));
+  void scanService.discover(scan.id, (controller, onBatch) => streamCandidates([root], false, controller, onBatch));
 }
 
 function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = false): Promise<string[]> {
@@ -725,7 +720,7 @@ function streamCandidates(roots: string[], includeAllFiles: boolean, controller:
       });
     };
     const unsubscribe = controller?.onStateChange(syncPause);
-    const finish = () => { if (finished) return; finished = true; signal?.removeEventListener("abort", abort); unsubscribe?.(); flush(); void delivery.finally(resolve); };
+    const finish = () => { if (finished) return; finished = true; signal?.removeEventListener("abort", abort); unsubscribe?.(); flush(); void delivery.then(resolve, resolve); };
     const abort = () => { workers.forEach((worker) => void worker.terminate()); finish(); };
     signal?.addEventListener("abort", abort, { once: true });
     syncPause();

@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.3.11",
+  "version": "0.3.12",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -28,6 +28,7 @@
     "react-router-dom": "^7.18.2",
     "recharts": "^3.10.1",
     "three": "^0.185.1",
+    "viai-local-security-engine": "file:..",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -55,6 +56,7 @@
   "build": {
     "appId": "com.eforendless.viai",
     "productName": "viAI Security Engine",
+    "afterAllArtifactBuild": "./scripts/generate-update-manifest.cjs",
     "directories": {
       "output": "release"
     },

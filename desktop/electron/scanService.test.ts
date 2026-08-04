@@ -11,6 +11,11 @@ class MemoryScanRepository {
   readonly cache = new Map<string, { size: number; mtimeMs: number; analyzedAt: string; priorityScore: number }>();
   currentScan(): PersistedScanState | undefined { return this.scan ? { ...this.scan, pendingFiles: [...this.scan.pendingFiles] } : undefined; }
   async saveScan(scan: PersistedScanState | undefined, options: { persist?: boolean } = {}): Promise<void> { if (options.persist !== false) this.saves += 1; this.scan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; }
+  async mutateActiveScan<T>(scanId: string, mutation: (scan: PersistedScanState) => T, options: { persist?: boolean } = {}): Promise<T | undefined> {
+    if (!this.scan || this.scan.id !== scanId) return undefined;
+    if (options.persist !== false) this.saves += 1;
+    return mutation(this.scan);
+  }
   async completeScan(scanId: string): Promise<void> { if (this.scan?.id !== scanId || this.scan.status !== "completed") return; this.lastCompletedScan = { ...this.scan, pendingFiles: [...this.scan.pendingFiles] }; this.scan = undefined; }
   async flushHistory(): Promise<void> {}
   scanCacheEntry(filePath: string) { return this.cache.get(filePath); }
@@ -32,7 +37,7 @@ test("scan recovery resumes persisted work and publishes synchronized lifecycle 
   assert.equal(repository.lastCompletedScan?.estimatedRemainingMs, undefined);
   assert.ok(typeof repository.lastCompletedScan?.completedAt === "string");
   assert.ok((repository.lastCompletedScan?.elapsedMs ?? 0) >= 0);
-  assert.deepEqual(events, ["scanProgress", "scanCompleted"]);
+  assert.deepEqual(events, ["scanProgress", "scanProgress", "scanCompleted"]);
 });
 
 test("a completed scan is archived before a new session starts", async () => {
@@ -276,4 +281,83 @@ test("cancellation from paused state finalizes without resuming queued files", a
   await cancelledEvent;
   assert.equal(repository.scan?.status, "cancelled");
   assert.equal(repository.scan?.filesRemaining, 0);
+});
+
+const inventory = { extension: ".jpg", mimeType: "image/jpeg", executable: false, script: false, archive: false, documentOrMedia: true, category: "media", profile: "inventory", locationRisk: "normal", signatureAvailability: "not-applicable", publisherTrust: "unknown", ageMs: 0, size: 1, priorityBand: "inventory", priorityScore: 0 } satisfies FileClassification;
+const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+test("light, balanced, and deep scans wait for delayed work before archiving", async () => {
+  const profiles: Array<["light" | "balanced" | "deep", number]> = [["light", 1], ["balanced", 2], ["deep", 2]];
+  const files = ["C:\\samples\\A.exe", "C:\\samples\\B.exe", "C:\\samples\\C.exe", "C:\\samples\\D.jpg", "C:\\samples\\E.exe"];
+  for (const [profile, concurrency] of profiles) {
+    const repository = new MemoryScanRepository();
+    let releaseLong!: () => void;
+    let longStarted!: () => void;
+    let complete!: () => void;
+    const longAnalysis = new Promise<void>((resolve) => { releaseLong = resolve; });
+    const started = new Promise<void>((resolve) => { longStarted = resolve; });
+    const completed = new Promise<void>((resolve) => { complete = resolve; });
+    const service = new ScanService(repository as unknown as BackgroundService, async (filePath) => {
+      if (filePath.endsWith("E.exe")) { longStarted(); await longAnalysis; return; }
+      await wait(filePath.endsWith("A.exe") ? 10 : filePath.endsWith("B.exe") ? 100 : 25);
+    }, (event) => { if (event === "scanCompleted") complete(); }, async (filePath) => filePath.endsWith("D.jpg") ? inventory : forensic);
+    await service.start("full", `${profile} profile`, files, concurrency);
+    await started;
+    assert.equal(repository.currentScan()?.status, "running", `${profile} completed while E was still in flight`);
+    assert.ok((repository.currentScan()?.progress ?? 0) < 100, `${profile} reported 100% before the completion barrier`);
+    assert.equal(Boolean(repository.lastCompletedScan), false, `${profile} archived before E settled`);
+    releaseLong();
+    await completed;
+    assert.equal(repository.scan, undefined);
+    assert.equal(repository.lastCompletedScan?.filesCompleted, files.length);
+    assert.equal(repository.lastCompletedScan?.forensicCount, 4);
+    assert.equal(repository.lastCompletedScan?.inventoryCount, 1);
+  }
+});
+
+test("bounded concurrency drains every candidate exactly once before completion", async () => {
+  const repository = new MemoryScanRepository();
+  const files = Array.from({ length: 100 }, (_, index) => `C:\\samples\\${index}.exe`);
+  const calls = new Map<string, number>();
+  let inFlight = 0;
+  let peak = 0;
+  let complete!: () => void;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async (filePath) => {
+    inFlight += 1; peak = Math.max(peak, inFlight); calls.set(filePath, (calls.get(filePath) ?? 0) + 1);
+    try { await wait(2); } finally { inFlight -= 1; }
+  }, (event) => { if (event === "scanCompleted") complete(); }, async () => forensic);
+  await service.start("full", "bounded concurrency", files, 2);
+  await completed;
+  assert.equal(peak, 2);
+  assert.equal(calls.size, files.length);
+  assert.ok([...calls.values()].every((count) => count === 1));
+  assert.equal(repository.lastCompletedScan?.filesCompleted, files.length);
+});
+
+test("analysis failures become terminal accounting outcomes and do not block completion", async () => {
+  const repository = new MemoryScanRepository();
+  let complete!: () => void;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async (filePath) => {
+    if (filePath.endsWith("failure.exe")) throw new Error("signature subprocess failed");
+  }, (event) => { if (event === "scanCompleted") complete(); }, async () => forensic);
+  await service.start("full", "analysis failures", ["C:\\samples\\success.exe", "C:\\samples\\failure.exe"], 2);
+  await completed;
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 2);
+  assert.equal(repository.lastCompletedScan?.errorCount, 1);
+  assert.equal(repository.lastCompletedScan?.status, "completed");
+});
+
+test("recovery archives an interrupted finalizing scan without recreating active work", async () => {
+  const repository = new MemoryScanRepository();
+  repository.scan = { id: "finalizing-recovery", mode: "full", target: "All accessible PC files", startedAt: "2026-08-04T12:00:00.000Z", updatedAt: "2026-08-04T12:10:00.000Z", currentFile: "Saving completed scan", filesCompleted: 3, filesRemaining: 0, totalFiles: 3, progress: 99, currentStage: "Finalizing", status: "finalizing", investigationCount: 0, pausedDurationMs: 0, pendingFiles: [] };
+  let complete!: () => void;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { if (event === "scanCompleted") complete(); });
+  await service.recover();
+  await completed;
+  assert.equal(repository.scan, undefined);
+  assert.equal(repository.lastCompletedScan?.id, "finalizing-recovery");
+  assert.equal(repository.lastCompletedScan?.status, "completed");
 });

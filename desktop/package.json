@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.3.12",
+  "version": "0.3.13",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "publish:github": "npm run build && electron-builder --win nsis --x64 --publish always",
     "start": "npm run build && electron .",
     "lint": "eslint .",
-    "test": "npm run build && node scripts/test-assessment-presentation.mjs && node scripts/test-history-layout.mjs && node scripts/test-history-interactions.mjs && node scripts/test-realtime-search.mjs && node scripts/test-scan-completion.mjs && node --test dist-electron/*.test.js",
+    "test": "npm run build && node scripts/test-assessment-presentation.mjs && node scripts/test-history-layout.mjs && node scripts/test-history-interactions.mjs && node scripts/test-realtime-search.mjs && node scripts/test-dark-theme.mjs && node scripts/test-scan-completion.mjs && node --test dist-electron/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

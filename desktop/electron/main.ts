@@ -13,6 +13,7 @@ import { notificationForAnalysis } from "./analysisNotification";
 import { StartupManager, type StartupProgress } from "./startup";
 import { collectSystemOverview } from "./systemOverview";
 import { UpdateService } from "./updater";
+import { isNotificationTarget, type NativeNotificationPayload, type NotificationTarget, WindowsNotificationService } from "./windowsNotificationService";
 
 const execFileAsync = promisify(execFile);
 const isPrimaryInstance = app.requestSingleInstanceLock();
@@ -34,16 +35,25 @@ let restoreAfterStartup = false;
 let startupSnapshot: BackgroundSnapshot | undefined;
 let updateService: UpdateService | undefined;
 let engineEventsSince = new Date().toISOString();
+let rendererReady = false;
+let pendingNotificationTarget: NotificationTarget | undefined;
 const launchedInBackground = process.argv.includes("--viai-background");
 const launchedMinimized = process.argv.includes("--viai-minimized");
 
 if (!isPrimaryInstance) app.quit();
 if (isPrimaryInstance) {
 
+const windowsNotifications = new WindowsNotificationService({
+  supported: () => Notification.isSupported(),
+  deliver: deliverNativeNotification,
+  diagnostic: (message) => { if (!app.isPackaged) console.debug(`[viAI notifications] ${message}`); },
+});
+
 function publishDeviceSecurity(snapshot: DeviceSecuritySnapshot, events: readonly DeviceSecuritySnapshot["history"][number][]): void {
   void backgroundService?.setRuntimeMonitor("device-security", snapshot.monitoringActive);
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("device-security:changed", { snapshot, events });
   void recordDeviceEvents(snapshot, events);
+  if (snapshot.monitoringState === "degraded") notifyProtectionFailure();
 }
 
 function publishBackground(snapshot: BackgroundSnapshot): void {
@@ -53,6 +63,7 @@ function publishBackground(snapshot: BackgroundSnapshot): void {
 
 function publishScan(event: ScanEventName, scan: Omit<PersistedScanState, "pendingFiles">): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("scan:event", { event, scan });
+  if (event === "scanCompleted") notifyScanCompleted(scan);
 }
 
 function enginePaths(): { entry: string; workingDirectory: string } {
@@ -111,6 +122,7 @@ function showMainWindow(): void {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+  deliverPendingNavigation();
 }
 
 function createWindow(show = true): BrowserWindow {
@@ -134,6 +146,7 @@ function createWindow(show = true): BrowserWindow {
     },
   });
   mainWindow = window;
+  rendererReady = false;
   dashboardLoad = new Promise<void>((resolve, reject) => {
     window.webContents.once("did-finish-load", () => resolve());
     window.webContents.once("did-fail-load", (_event, _errorCode, errorDescription) => reject(new Error(`Dashboard could not load: ${errorDescription}`)));
@@ -146,7 +159,7 @@ function createWindow(show = true): BrowserWindow {
   window.on("minimize", () => {
     if (backgroundService?.snapshot().settings.minimizeToTray === true) window.hide();
   });
-  window.on("closed", () => { if (mainWindow === window) mainWindow = undefined; });
+  window.on("closed", () => { if (mainWindow === window) { mainWindow = undefined; rendererReady = false; } });
 
   const devServer = process.env.VITE_DEV_SERVER_URL;
   if (devServer) void window.loadURL(devServer);
@@ -198,7 +211,6 @@ async function prepareDashboard(): Promise<void> {
 function announceStartupReady(): void {
   if (startupComplete || quitting || disposing) return;
   startupComplete = true;
-  if (startupSnapshot?.settings.backgroundProtection === true && startupSnapshot.settings.notifyBackgroundStarted === true) showNotification(startupSnapshot.settings, "viAI background protection", "Local monitoring is running.");
   if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send("startup:ready");
   else completeStartupTransition();
 }
@@ -254,11 +266,18 @@ function completeStartupTransition(): void {
   if (splashWindow && !splashWindow.isDestroyed()) splashWindow.destroy();
   const startHidden = launchedInBackground && (startupSnapshot?.settings.startSilently === true || launchedMinimized);
   if (!startHidden || restoreAfterStartup) showMainWindow();
+  deliverPendingNavigation();
   startEngineEventPolling();
   void backgroundService?.loadHistory().catch((error) => console.error("Could not load deferred local history", error));
 }
 
 app.on("second-instance", () => { if (app.isReady()) showMainWindow(); });
+
+ipcMain.on("renderer:ready", (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) return;
+  rendererReady = true;
+  deliverPendingNavigation();
+});
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
@@ -373,9 +392,8 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
   } else if (mode === "folder") {
     if (typeof target !== "string" || !existsSync(target)) throw new Error("Choose an existing folder to scan");
     const folderTarget = target;
-    const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
-    const parallel = scanConcurrency(performanceMode, configuredParallel);
+    const parallel = scanConcurrency(performanceMode);
     const scan = await scanService.start(mode, target, [], parallel, false);
     void scanService.discover(scan.id, (controller, onBatch) => streamCandidates([folderTarget], false, controller, onBatch));
     return scan;
@@ -383,8 +401,7 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const home = homedir();
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
     target = performanceMode === "deep" ? "All accessible PC files" : performanceMode === "light" ? "Important Windows locations" : "Common Windows locations";
-    const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
-    const parallel = scanConcurrency(performanceMode, configuredParallel);
+    const parallel = scanConcurrency(performanceMode);
     const scan = await scanService.start(mode, target, [], parallel, false);
     void scanService.discover(scan.id, async (controller, onBatch) => {
       const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync);
@@ -392,9 +409,8 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     });
     return scan;
   }
-  const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
   const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
-  const parallel = scanConcurrency(performanceMode, configuredParallel);
+  const parallel = scanConcurrency(performanceMode);
   return scanService.start(mode, target ?? "", files, parallel);
 });
 ipcMain.handle("scan:pause", () => scanService?.pause());
@@ -456,9 +472,9 @@ async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | 
     }
     if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
-    await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder", origin);
+    const assessmentId = await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder", origin);
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
-    notifyAnalysis(body);
+    notifyAnalysis(body, assessmentId);
     return body;
   } catch (error) {
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
@@ -531,9 +547,8 @@ function fullScanRoots(mode: "light" | "balanced" | "deep", home: string, fixed:
   return [...new Set(["C:\\Windows\\Temp", ...important, join(home, "AppData"), "C:\\Program Files", "C:\\Program Files (x86)", ...removable])];
 }
 
-function scanConcurrency(mode: "light" | "balanced" | "deep", configured: number): number {
-  const requested = configured > 0 ? configured : mode === "light" ? 1 : engineAnalysisConcurrency;
-  return Math.max(1, Math.min(requested, engineAnalysisConcurrency));
+function scanConcurrency(mode: "light" | "balanced" | "deep"): number {
+  return mode === "light" ? 1 : engineAnalysisConcurrency;
 }
 
 async function requestRemovableStorageScan(device: DeviceRecord, trigger: DeviceStorageScanTrigger): Promise<void> {
@@ -542,8 +557,7 @@ async function requestRemovableStorageScan(device: DeviceRecord, trigger: Device
   if (!existsSync(root)) throw new Error("The removable storage is no longer available");
   const settings = backgroundService.snapshot().settings;
   const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
-  const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
-  const scan = await scanService.start("folder", root, [], scanConcurrency(performanceMode, configuredParallel), false, { source: "removable-media", id: device.id, volume: root, trigger });
+  const scan = await scanService.start("folder", root, [], scanConcurrency(performanceMode), false, { source: "removable-media", id: device.id, volume: root, trigger });
   void scanService.discover(scan.id, (controller, onBatch) => streamCandidates([root], false, controller, onBatch));
 }
 
@@ -552,6 +566,7 @@ function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = 
     const files: string[] = [];
     const workers = roots.map((root) => new Worker(join(__dirname, "scanWorker.js"), { workerData: { root, includeAllFiles } }));
     let completed = 0;
+    const settledWorkers = new Set<Worker>();
     let finished = false;
     const finish = () => {
       if (finished) return;
@@ -559,18 +574,23 @@ function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = 
       workers.forEach((worker) => void worker.terminate());
       resolve(files);
     };
+    const settleWorker = (worker: Worker) => {
+      if (settledWorkers.has(worker) || finished) return;
+      settledWorkers.add(worker);
+      completed += 1;
+      if (completed === workers.length) finish();
+    };
     if (workers.length === 0) finish();
     for (const worker of workers) {
-      worker.on("message", (filePath: string) => {
+      worker.on("message", (message: unknown) => {
         if (finished) return;
-        files.push(filePath);
+        if (typeof message === "object" && message !== null && (message as { type?: unknown }).type === "complete") { settleWorker(worker); return; }
+        if (typeof message !== "string") return;
+        files.push(message);
         if (files.length >= maxFiles) finish();
       });
-      worker.once("error", () => undefined);
-      worker.once("exit", () => {
-        completed += 1;
-        if (completed === workers.length) finish();
-      });
+      worker.once("error", () => settleWorker(worker));
+      worker.once("exit", () => settleWorker(worker));
     }
   });
 }
@@ -606,16 +626,66 @@ function createTray(): void {
   ]));
 }
 
-function showNotification(settings: Record<string, unknown>, title: string, body: string): void {
-  if (settings.windowsNotifications === true && Notification.isSupported()) new Notification({ title, body, silent: settings.soundNotifications !== true }).show();
+function deliverNativeNotification(payload: NativeNotificationPayload): void {
+  const notification = new Notification({ title: payload.title, body: payload.body, silent: payload.silent });
+  notification.on("click", () => activateNotificationTarget(payload.target));
+  notification.show();
 }
 
-function notifyAnalysis(body: Record<string, unknown>): void {
+function activateNotificationTarget(target: unknown): void {
+  if (!isNotificationTarget(target)) return;
+  pendingNotificationTarget = target;
+  showMainWindow();
+  deliverPendingNavigation();
+}
+
+function deliverPendingNavigation(): void {
+  if (!pendingNotificationTarget || !rendererReady || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("notification:navigate", pendingNotificationTarget);
+  pendingNotificationTarget = undefined;
+}
+
+function notifyAnalysis(body: Record<string, unknown>, assessmentId?: string): void {
   const settings = backgroundService?.snapshot().settings;
   if (!settings) return;
   const notification = notificationForAnalysis(body);
-  if (settings[notification.setting] === true) showNotification(settings, notification.title, notification.body);
-  if (settings.notifyScanCompleted === true && notification.setting !== "notifySafeScan") showNotification(settings, "viAI static analysis complete", notification.body);
+  windowsNotifications.notify(settings, {
+    category: "assessment",
+    setting: notification.setting,
+    title: notification.title,
+    body: notification.body,
+    target: assessmentId ? { route: "history-detail", assessmentId } : { route: "history" },
+    dedupeKey: notification.dedupeKey,
+  });
+}
+
+function notifyScanCompleted(scan: Omit<PersistedScanState, "pendingFiles">): void {
+  const settings = backgroundService?.snapshot().settings;
+  if (!settings) return;
+  const label = scan.mode === "full" ? "Full scan" : scan.mode === "quick" ? "Quick scan" : "Folder scan";
+  const attention = scan.investigationCount > 0 ? ` ${scan.investigationCount} item${scan.investigationCount === 1 ? "" : "s"} need your attention.` : " No items need your attention.";
+  windowsNotifications.notify(settings, {
+    category: "scan",
+    setting: "notifyScanCompleted",
+    title: `${label} completed`,
+    body: `${scan.filesCompleted.toLocaleString()} files processed.${attention}`,
+    target: { route: "full-scan", scanId: scan.id },
+    dedupeKey: `scan:${scan.id}`,
+  });
+}
+
+function notifyProtectionFailure(): void {
+  const settings = backgroundService?.snapshot().settings;
+  if (!settings || settings.backgroundProtection !== true) return;
+  windowsNotifications.notify(settings, {
+    category: "protection",
+    setting: "notifyProtectionFailures",
+    title: "viAI Protection",
+    body: "Realtime protection needs attention. One or more monitoring components could not start.",
+    target: { route: "realtime" },
+    dedupeKey: "protection:device-security-degraded",
+    dedupeWindowMs: 300_000,
+  });
 }
 
 async function recordDeviceEvents(snapshot: DeviceSecuritySnapshot, events: readonly DeviceSecuritySnapshot["history"][number][]): Promise<void> {
@@ -623,11 +693,20 @@ async function recordDeviceEvents(snapshot: DeviceSecuritySnapshot, events: read
   if (!settings || events.length === 0) return;
   for (const event of events) {
     const device = snapshot.devices.find((entry) => entry.id === event.deviceId);
-    if (device?.connectionType !== "usb" && !device?.isStorageDevice) continue;
+    if (!device?.isStorageDevice) continue;
     await backgroundService?.recordEvent(`Device Security: ${event.detail}`);
     const notify = event.type === "device-connected" ? settings.notifyUsbConnected === true
       : event.type === "device-removed" ? settings.notifyUsbRemoved === true : false;
-    if (notify) showNotification(settings, "viAI Device Security", event.detail);
+    if (!notify) continue;
+    const connected = event.type === "device-connected";
+    windowsNotifications.notify(settings, {
+      category: "device",
+      setting: connected ? "notifyUsbConnected" : "notifyUsbRemoved",
+      title: "viAI Device Security",
+      body: connected ? `Removable storage connected: ${device.friendlyName}` : `Removable storage removed: ${device.friendlyName}`,
+      target: { route: "device-security", deviceId: device.id },
+      dedupeKey: `device:${event.type}:${device.id}`,
+    });
   }
 }
 
@@ -649,8 +728,8 @@ async function syncEngineEvents(): Promise<void> {
       const analyzedAt = record.analyzedAt;
       if (typeof analyzedAt === "string") newestEventAt = Math.max(newestEventAt, Date.parse(analyzedAt));
       const source = record.evidenceStore?.file?.source;
-      await backgroundService?.recordAnalysis({ analysis }, source === "download" || source === "filesystem" || source === "removable-media" ? "realtime" : "single-file");
-      notifyAnalysis({ analysis });
+      const assessmentId = await backgroundService?.recordAnalysis({ analysis }, source === "download" || source === "filesystem" || source === "removable-media" ? "realtime" : "single-file");
+      notifyAnalysis({ analysis }, assessmentId);
     }
     for (const observation of body.observations ?? []) {
       if (!observation || typeof observation !== "object") continue;
@@ -694,6 +773,7 @@ function streamCandidates(roots: string[], includeAllFiles: boolean, controller:
     const signal = controller?.signal;
     const workers = roots.map((root) => new Worker(join(__dirname, "scanWorker.js"), { workerData: { root, includeAllFiles } }));
     let completed = 0;
+    const settledWorkers = new Set<Worker>();
     let pending: string[] = [];
     let delivery = Promise.resolve();
     let queuedBatches = 0;
@@ -722,20 +802,25 @@ function streamCandidates(roots: string[], includeAllFiles: boolean, controller:
     const unsubscribe = controller?.onStateChange(syncPause);
     const finish = () => { if (finished) return; finished = true; signal?.removeEventListener("abort", abort); unsubscribe?.(); flush(); void delivery.then(resolve, resolve); };
     const abort = () => { workers.forEach((worker) => void worker.terminate()); finish(); };
+    const settleWorker = (worker: Worker) => {
+      if (settledWorkers.has(worker) || finished) return;
+      settledWorkers.add(worker);
+      completed += 1;
+      if (completed === workers.length) finish();
+    };
     signal?.addEventListener("abort", abort, { once: true });
     syncPause();
     if (workers.length === 0) finish();
     for (const worker of workers) {
-      worker.on("message", (filePath: string) => {
+      worker.on("message", (message: unknown) => {
         if (signal?.aborted || finished) return;
-        pending.push(filePath);
+        if (typeof message === "object" && message !== null && (message as { type?: unknown }).type === "complete") { settleWorker(worker); return; }
+        if (typeof message !== "string") return;
+        pending.push(message);
         if (pending.length >= 64) flush();
       });
-      worker.once("error", () => undefined);
-      worker.once("exit", () => {
-        completed += 1;
-        if (completed === workers.length) finish();
-      });
+      worker.once("error", () => settleWorker(worker));
+      worker.once("exit", () => settleWorker(worker));
     }
   });
 }

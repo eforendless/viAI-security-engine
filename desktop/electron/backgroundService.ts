@@ -107,7 +107,7 @@ export const recommendedSettings: BackgroundSettings = Object.freeze({
   monitorUsbInsertion: true, automaticallyScanUsb: true, monitorExternalSsd: true, monitorExternalHdd: true, monitorSdCards: true, monitorSmartphones: false, monitorUnknownUsbDevices: true,
   monitorNewProcesses: false, monitorChildProcesses: false, monitorSuspiciousCommandLines: false, monitorPowerShell: false, monitorCmd: false, monitorWScript: false, monitorMshta: false,
   monitorStartupFolder: false, monitorScheduledTasks: false, monitorRegistryRunKeys: false, monitorServices: false, monitorDrivers: false,
-  notifySafeScan: false, notifyMediumRisk: true, notifyHighRisk: true, notifyUsbConnected: true, notifyUsbRemoved: true, notifyBackgroundStarted: true, notifyBackgroundStopped: false, notifyEngineUpdates: true, notifyScanCompleted: true,
+  notifySafeScan: false, notifyMediumRisk: true, notifyHighRisk: true, notifyUsbConnected: true, notifyUsbRemoved: true, notifyProtectionFailures: true, notifyBackgroundStarted: true, notifyBackgroundStopped: false, notifyEngineUpdates: true, notifyScanCompleted: true,
   mediumRiskAction: "sandbox", highRiskAction: "ai", performanceMode: "balanced", scanPriority: "normal", maximumParallelScans: 0,
   customFolders: [], excludedFolders: [], excludedFiles: [], excludedExtensions: [], excludedProcesses: [],
 });
@@ -186,17 +186,18 @@ export class BackgroundService {
   recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
   async flushScanCache(): Promise<void> { await this.enqueue(async () => { if (!this.scanCacheDirty) return; await mkdir(dirname(this.scanCachePath), { recursive: true }); const temporary = `${this.scanCachePath}.tmp`; await writeFile(temporary, JSON.stringify(Object.fromEntries(this.scanCache)), "utf8"); await rename(temporary, this.scanCachePath); this.scanCacheDirty = false; }); }
 
-  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false, device?: { id: string; volume: string; trigger: "arrival" | "manual" }): Promise<void> {
+  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false, device?: { id: string; volume: string; trigger: "arrival" | "manual" }): Promise<string | undefined> {
     const analysis = analysisRecord(body);
     if (!analysis) return;
-    await this.enqueue(async () => {
+    return this.enqueue(async () => {
       await this.ensureHistoryLoaded();
       const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
       const assessment = assessmentSummary(analysis.report?.assessment ?? analysis.staticAnalysisReport?.assessment);
       const source = analysis.evidenceStore?.file?.source === "download" || analysis.evidenceStore?.file?.source === "filesystem" || analysis.evidenceStore?.file?.source === "removable-media" ? analysis.evidenceStore.file.source : undefined;
-      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, source, deviceId: device?.id, deviceVolume: device?.volume, deviceScanTrigger: device?.trigger, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
+      const record: BackgroundHistoryRecord = { id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, source, deviceId: device?.id, deviceVolume: device?.volume, deviceScanTrigger: device?.trigger, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined };
+      this.history = [record, ...this.history.filter((entry) => !(entry.kind === "scan" && entry.fileHash === analysis.hashes?.sha256 && entry.occurredAt === analysis.analyzedAt))];
       if (deferPersistence) {
         this.historyDirty = true;
         this.scheduleHistoryFlush();
@@ -204,6 +205,7 @@ export class BackgroundService {
         await this.persistHistory();
         this.publish();
       }
+      return record.id;
     });
   }
 

@@ -15,6 +15,7 @@ export class ScanService {
   private controller?: ScanController;
   private workerRun?: { scanId: string; promise: Promise<void> };
   private discoveryRun?: { scanId: string; promise: Promise<void> };
+  private readonly completionDiagnosticTimers = new Map<string, NodeJS.Timeout>();
   private readonly idleWaiters: Array<() => void> = [];
   private resourceBaseline = { usage: process.cpuUsage(), at: Date.now() };
   private lastProgressPublishedAt = 0;
@@ -129,6 +130,7 @@ export class ScanService {
     this.diagnostic(scanId, `discovery completed candidates=${scan.totalFiles}`);
     this.emit("scanProgress", scan);
     this.startWorkers(scanId);
+    await this.maybeComplete(scanId, "discovery-completed");
   }
 
   async pause(): Promise<void> {
@@ -211,8 +213,7 @@ export class ScanService {
       await Promise.all(Array.from({ length: concurrency }, () => this.processNext(scanId, controller)));
       if (controller.signal.aborted || controller.state === "cancelling") { await this.finalizeCancellation(scanId); return; }
       await this.finishPause(scanId);
-      const scan = this.background.currentScan();
-      if (scan?.id === scanId && controller.state === "running" && scan.status === "running" && scan.discoveryComplete !== false && scan.pendingFiles.length === 0) await this.complete(scanId);
+      await this.maybeComplete(scanId, "workers-drained");
     } catch {
       if (controller.signal.aborted || controller.state === "cancelling") await this.finalizeCancellation(scanId);
       else await this.fail(scanId);
@@ -243,7 +244,10 @@ export class ScanService {
         }, { persist: false, publish: false });
         if (scan.mode === "quick" || !resolvedClassification.cacheHit && resolvedClassification.profile !== "inventory") analysis = await this.analyze(file, scan.mode, resolvedClassification, controller.signal, scan.source === "removable-media" && scan.deviceId && scan.deviceVolume && scan.deviceScanTrigger ? { source: scan.source, id: scan.deviceId, volume: scan.deviceVolume, trigger: scan.deviceScanTrigger } : undefined);
       } catch (error) { if (!isAbort(error) && !controller.signal.aborted) failed = true; }
-      this.inFlight.delete(file);
+      finally {
+        this.inFlight.delete(file);
+        this.diagnostic(scanId, `analysis settled file=${file} inFlight=${this.inFlight.size}`);
+      }
       if (controller.signal.aborted || controller.state === "cancelling") { await this.finalizeCancellation(scanId); return; }
       if (!failed && classification) this.background.recordScanCache?.(file, { size: classification.size, mtimeMs: classification.mtimeMs ?? 0, analyzedAt: new Date().toISOString(), priorityScore: classification.priorityScore ?? 0 });
       const pausing = controller.state === "pausing";
@@ -262,6 +266,7 @@ export class ScanService {
       }, { persist: false, publish: false });
       if (!latest) { await this.finishPause(scanId); return; }
       if (this.shouldPublish()) this.emit("scanProgress", latest);
+      await this.maybeComplete(scanId, "worker-settled");
       if (pausing) { await this.finishPause(scanId); return; }
     }
   }
@@ -305,10 +310,23 @@ export class ScanService {
     });
     if (!finalizing || finalizing.id !== scanId || finalizing.status !== "finalizing") return;
     if (controller.state === "running") controller.transition("finalizing");
-    this.diagnostic(scanId, "queue drained and analyses settled; finalizing");
+    this.clearCompletionDiagnostic(scanId);
+    this.diagnostic(scanId, "completion barrier satisfied; finalization started");
     this.emit("scanProgress", finalizing);
-    await this.background.flushScanCache?.();
-    await this.background.flushHistory(false);
+    try {
+      this.diagnostic(scanId, "scan cache flush started");
+      await this.background.flushScanCache?.();
+      this.diagnostic(scanId, "scan cache flush completed");
+    } catch (error) {
+      console.error(`[Scan ${scanId}] scan cache flush failed`, error);
+    }
+    try {
+      this.diagnostic(scanId, "history flush started");
+      await this.background.flushHistory(false);
+      this.diagnostic(scanId, "history flush completed");
+    } catch (error) {
+      console.error(`[Scan ${scanId}] history flush failed`, error);
+    }
     const completed = await this.mutateScan(scanId, (scan) => {
       if (scan.status !== "finalizing" || controller.state !== "finalizing") return false;
       const completedAt = new Date(); scan.status = "completed"; scan.currentStage = "Complete"; scan.currentFile = "Local analysis complete"; scan.progress = 100; scan.completedAt = completedAt.toISOString(); scan.elapsedMs = elapsedMs(scan, completedAt.valueOf()); scan.updatedAt = scan.completedAt;
@@ -316,8 +334,14 @@ export class ScanService {
     }, { publish: false });
     if (!completed) return;
     controller.transition("completed");
-    await this.background.completeScan(scanId);
-    this.diagnostic(scanId, "history flushed, archived, and active session cleared");
+    try {
+      this.diagnostic(scanId, "active scan persistence started");
+      await this.background.completeScan(scanId);
+      this.diagnostic(scanId, "active scan persistence completed");
+    } catch (error) {
+      console.error(`[Scan ${scanId}] active scan persistence failed`, error);
+    }
+    this.diagnostic(scanId, "completed and active session cleared");
     this.emit("scanCompleted", completed);
     this.releaseRuntime(scanId);
   }
@@ -340,8 +364,46 @@ export class ScanService {
   private async mutateScan(scanId: string, mutation: (scan: PersistedScanState) => boolean, options: import("./backgroundService").SaveScanOptions = {}): Promise<PersistedScanState | undefined> {
     return this.background.mutateActiveScan(scanId, (scan) => mutation(scan) ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined, options);
   }
+  private async maybeComplete(scanId: string, source: string): Promise<void> {
+    const controller = this.controllerFor(scanId);
+    const scan = this.background.currentScan();
+    if (!controller || !scan || scan.id !== scanId || scan.status !== "running" || controller.state !== "running") return;
+    const barrierSatisfied = scan.discoveryComplete !== false && scan.pendingFiles.length === 0 && this.inFlight.size === 0;
+    if (barrierSatisfied) {
+      this.clearCompletionDiagnostic(scanId);
+      this.diagnostic(scanId, `completion barrier satisfied source=${source} discoveryFinished=${scan.discoveryComplete !== false} queue=${scan.pendingFiles.length} inFlight=${this.inFlight.size}`);
+      await this.complete(scanId);
+      return;
+    }
+    if (scan.filesRemaining === 0 && scan.progress >= 99) this.scheduleCompletionDiagnostic(scanId);
+  }
+  private scheduleCompletionDiagnostic(scanId: string): void {
+    if (this.completionDiagnosticTimers.has(scanId)) return;
+    const timer = setTimeout(() => {
+      this.completionDiagnosticTimers.delete(scanId);
+      const controller = this.controllerFor(scanId);
+      const scan = this.background.currentScan();
+      if (!controller || !scan || scan.id !== scanId || terminal(scan.status) || scan.filesRemaining !== 0 || scan.progress < 99) return;
+      const blockers = [
+        ...(scan.discoveryComplete === false ? ["discoveryComplete=false"] : []),
+        ...(scan.pendingFiles.length > 0 ? [`queue=${scan.pendingFiles.length}`] : []),
+        ...(this.inFlight.size > 0 ? [`inFlight=${this.inFlight.size}`] : []),
+        ...(controller.state !== "running" ? [`controller=${controller.state}`] : []),
+        ...(scan.status !== "running" ? [`status=${scan.status}`] : []),
+      ];
+      console.warn(`[Scan Completion Blocked] scanId=${scanId} discoveryFinished=${scan.discoveryComplete !== false} completed=${scan.filesCompleted}/${scan.totalFiles} remaining=${scan.filesRemaining} queue=${scan.pendingFiles.length} inFlight=${this.inFlight.size} progress=${scan.progress} workerRun=${this.workerRun?.scanId === scanId} state=${controller.state} status=${scan.status} blockers=${blockers.join(",") || "none"}`);
+    }, 1_000);
+    timer.unref();
+    this.completionDiagnosticTimers.set(scanId, timer);
+  }
+  private clearCompletionDiagnostic(scanId: string): void {
+    const timer = this.completionDiagnosticTimers.get(scanId);
+    if (timer) clearTimeout(timer);
+    this.completionDiagnosticTimers.delete(scanId);
+  }
   private releaseRuntime(scanId: string): void {
     if (this.controller?.scanId !== scanId) return;
+    this.clearCompletionDiagnostic(scanId);
     this.inFlight.clear(); this.knownFiles.clear(); this.classifications.clear();
     this.controller = undefined;
   }

@@ -40,4 +40,4 @@ async function scan(directory: string): Promise<void> {
   }
 }
 
-void scan(root);
+void scan(root).then(() => parentPort?.postMessage({ type: "complete" }));

@@ -1,5 +1,7 @@
 export {};
 
+import type { NotificationTarget } from "../electron/windowsNotificationService";
+
 declare global {
   interface Window {
     viai?: {
@@ -7,6 +9,8 @@ declare global {
         version(): Promise<string>;
         engineVersion(): Promise<string>;
         clearLocalData(): Promise<void>;
+        rendererReady(): void;
+        onNotificationNavigate(listener: (target: NotificationTarget) => void): () => void;
       };
       system: {
         overview(): Promise<unknown>;

@@ -1,10 +1,17 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { isNotificationTarget, type NotificationTarget } from "./windowsNotificationService";
 
 contextBridge.exposeInMainWorld("viai", {
   application: {
     version: () => ipcRenderer.invoke("application:version") as Promise<string>,
     engineVersion: () => ipcRenderer.invoke("engine:version") as Promise<string>,
     clearLocalData: () => ipcRenderer.invoke("application:clear-local-data") as Promise<void>,
+    rendererReady: () => ipcRenderer.send("renderer:ready"),
+    onNotificationNavigate: (listener: (target: NotificationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: unknown) => { if (isNotificationTarget(target)) listener(target); };
+      ipcRenderer.on("notification:navigate", handler);
+      return () => ipcRenderer.removeListener("notification:navigate", handler);
+    },
   },
   system: {
     overview: () => ipcRenderer.invoke("system:overview") as Promise<unknown>,

@@ -72,6 +72,8 @@ export interface LogicalDisk {
   VolumeSerialNumber?: string;
 }
 
+type DiscoveredDevice = Omit<DeviceRecord, "firstSeen" | "lastSeen" | "status" | "isTrusted" | "trustIndicators">;
+
 const defaultPolicies = Object.freeze({ automaticallyScanUsb: true });
 
 export interface DeviceMonitoringPolicy {
@@ -89,10 +91,13 @@ export class DeviceSecurityService {
   private listener?: ChildProcessWithoutNullStreams;
   private refreshTimer?: NodeJS.Timeout;
   private refreshQueued = false;
+  private reconciling = false;
+  private bufferedPnpEvents = 0;
+  private listenerOutput = "";
   private started = false;
   private monitoringState: DeviceMonitoringState = "disabled";
 
-  constructor(private readonly dataPath: string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true }), private readonly scanStorage: DeviceStorageScanRequest = async () => undefined) {}
+  constructor(private readonly dataPath: string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true }), private readonly scanStorage: DeviceStorageScanRequest = async () => undefined, private readonly discover: () => Promise<DiscoveredDevice[]> = discoverWindowsDevices) {}
 
   async start(): Promise<void> {
     if (this.started) return;
@@ -107,8 +112,12 @@ export class DeviceSecurityService {
     if (!this.started) return;
     const policy = this.monitoringPolicy();
     if (policy.monitorUsbStorage || policy.monitorUsbInsertion) {
-      await this.refresh();
-      if (this.started && process.platform === "win32") this.startPnPListener();
+      this.reconciling = true;
+      this.bufferedPnpEvents = 0;
+      if (this.started && process.platform === "win32") await this.startPnPListener();
+      await this.refresh(false);
+      this.reconciling = false;
+      if (this.bufferedPnpEvents > 0) await this.refresh();
       if (process.platform !== "win32") this.monitoringState = "degraded";
       this.notify(this.snapshot(), []);
       return;
@@ -116,6 +125,8 @@ export class DeviceSecurityService {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
     this.refreshQueued = false;
+    this.reconciling = false;
+    this.bufferedPnpEvents = 0;
     this.listener?.kill();
     this.listener = undefined;
     this.monitoringState = "disabled";
@@ -134,6 +145,8 @@ export class DeviceSecurityService {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
     this.refreshQueued = false;
+    this.reconciling = false;
+    this.bufferedPnpEvents = 0;
     this.listener?.kill();
     this.listener = undefined;
     this.monitoringState = "disabled";
@@ -159,15 +172,46 @@ export class DeviceSecurityService {
     await this.scanStorage(device, "manual");
   }
 
-  private startPnPListener(): void {
+  private async startPnPListener(): Promise<void> {
     if (this.listener) return;
-    const script = "$null = Register-WmiEvent -Class Win32_DeviceChangeEvent -SourceIdentifier viAI_DeviceChange; while ($true) { $event = Wait-Event -SourceIdentifier viAI_DeviceChange; if ($null -ne $event) { Remove-Event -EventIdentifier $event.EventIdentifier; [Console]::Out.WriteLine('change'); } }";
+    const script = "$null = Register-WmiEvent -Class Win32_DeviceChangeEvent -SourceIdentifier viAI_DeviceChange; [Console]::Out.WriteLine('ready'); while ($true) { $event = Wait-Event -SourceIdentifier viAI_DeviceChange; if ($null -ne $event) { Remove-Event -EventIdentifier $event.EventIdentifier; [Console]::Out.WriteLine('change'); } }";
     this.listener = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true });
+    const listener = this.listener;
     this.monitoringState = "active";
-    this.listener.stdout.setEncoding("utf8");
-    this.listener.stdout.on("data", () => this.queueRefresh());
-    this.listener.once("error", () => { this.listener = undefined; this.monitoringState = this.monitoringPolicy().monitorUsbStorage || this.monitoringPolicy().monitorUsbInsertion ? "degraded" : "disabled"; this.notify(this.snapshot(), []); });
-    this.listener.once("exit", () => { this.listener = undefined; this.monitoringState = this.monitoringPolicy().monitorUsbStorage || this.monitoringPolicy().monitorUsbInsertion ? "degraded" : "disabled"; this.notify(this.snapshot(), []); });
+    this.listenerOutput = "";
+    listener.stdout.setEncoding("utf8");
+    let settleReady: (registered: boolean) => void = () => undefined;
+    const ready = new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 2_000);
+      settleReady = (value) => { clearTimeout(timeout); resolve(value); };
+      listener.stdout.on("data", (chunk: string) => {
+        this.listenerOutput += chunk;
+        const lines = this.listenerOutput.split(/\r?\n/);
+        this.listenerOutput = lines.pop() ?? "";
+        for (const line of lines) {
+          if (line === "ready") { settleReady(true); continue; }
+          if (line === "change") this.handlePnpChange();
+        }
+      });
+    });
+    const degrade = () => {
+      if (this.listener !== listener) return;
+      this.listener = undefined;
+      this.monitoringState = this.monitoringPolicy().monitorUsbStorage || this.monitoringPolicy().monitorUsbInsertion ? "degraded" : "disabled";
+      settleReady(false);
+      this.notify(this.snapshot(), []);
+    };
+    listener.once("error", degrade);
+    listener.once("exit", degrade);
+    const registered = await ready;
+    if (registered || this.listener !== listener) return;
+    listener.kill();
+    degrade();
+  }
+
+  private handlePnpChange(): void {
+    if (this.reconciling) { this.bufferedPnpEvents += 1; return; }
+    this.queueRefresh();
   }
 
   private queueRefresh(): void {
@@ -180,17 +224,17 @@ export class DeviceSecurityService {
     }, 400);
   }
 
-  private async refresh(): Promise<void> {
+  private async refresh(emitEvents = true): Promise<void> {
     const policy = this.monitoringPolicy();
     if (!this.started || (!policy.monitorUsbStorage && !policy.monitorUsbInsertion)) return;
-    const detected = await discoverWindowsDevices();
+    const detected = await this.discover();
     const now = new Date().toISOString();
     const prior = new Map(this.devices.map((device) => [device.id, device]));
     const next = detected.map((device) => this.decorate(device, prior.get(device.id), now));
     for (const device of this.devices) {
       if (!next.some((entry) => entry.id === device.id) && device.status !== "disconnected") next.push({ ...device, status: "disconnected", lastSeen: now });
     }
-    const events = policy.monitorUsbInsertion ? changes(this.devices, next, now) : [];
+    const events = emitEvents && policy.monitorUsbInsertion ? changes(this.devices, next, now) : [];
     if (!this.started) return;
     this.devices = next;
     if (events.length > 0) this.history = [...events, ...this.history].slice(0, 2_000);
@@ -316,7 +360,7 @@ function changes(previous: readonly DeviceRecord[], next: readonly DeviceRecord[
   const before = new Map(previous.map((device) => [device.id, device]));
   return next.flatMap((device) => {
     const existing = before.get(device.id);
-    if (!existing && device.status !== "disconnected") return [event("device-connected", device.id, `Connected: ${device.friendlyName}`, occurredAt)];
+    if ((!existing || existing.status === "disconnected") && device.status !== "disconnected") return [event("device-connected", device.id, `Connected: ${device.friendlyName}`, occurredAt)];
     if (existing?.status !== "disconnected" && device.status === "disconnected") return [event("device-removed", device.id, `Removed: ${device.friendlyName}`, occurredAt)];
     if (existing && existing.friendlyName !== device.friendlyName) return [event("device-changed", device.id, `Changed: ${device.friendlyName}`, occurredAt)];
     return [];

@@ -82,3 +82,93 @@ html, body, #root { height: 100%; overflow: hidden; }
 @media (max-width: 1200px) { .overview-stat-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px 0; }.overview-stat-grid > div:nth-child(6), .overview-stat-grid > div:nth-child(11) { padding-left: 0; border-left: 0; }.overview-actions > div:last-child { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 980px) { .overview-primary-grid, .overview-chart-grid { grid-template-columns: 1fr; }.overview-secondary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.overview-queue { grid-column: 1 / -1; }.overview-device-card, .overview-protection-card { min-height: 0; } }
 @media (max-width: 700px) { .security-overview-heading { align-items: flex-start; flex-direction: column; }.overview-device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.overview-secondary-grid { grid-template-columns: 1fr; }.overview-queue { grid-column: auto; }.overview-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.overview-stat-grid > div:nth-child(4), .overview-stat-grid > div:nth-child(7), .overview-stat-grid > div:nth-child(10), .overview-stat-grid > div:nth-child(13) { padding-left: 0; border-left: 0; }.overview-actions > div:last-child { grid-template-columns: repeat(2, minmax(0, 1fr)); }.overview-activity-list button { grid-template-columns: 32px minmax(0, 1fr) 38px; }.overview-activity-list .risk-badge, .overview-activity-list time { display: none; } }
+
+:root { color-scheme: light; --surface-primary: #ffffffcc; --surface-secondary: #f4f8fc; --surface-elevated: #ffffff; --surface-input: #ffffff; --surface-hover: #f7fbff; --surface-selected: #edf6ff; --surface-danger: #fff0f1; --text-primary: #1b2940; --text-secondary: #64738d; --text-muted: #71819a; --text-disabled: #8a98aa; --border-primary: #d7e2f0; --border-subtle: #e8eef5; --border-strong: #a9c9ea; --focus-ring: #54bae8; --accent-primary: #3978cf; --accent-foreground: #20507d; --status-safe-surface: #e7f6ed; --status-safe-text: #287852; --status-info-surface: #e9f4ff; --status-info-text: #286ca7; --status-warning-surface: #fff3dc; --status-warning-text: #986313; --status-danger-surface: #ffeaec; --status-danger-text: #ad3b47; }
+:root[data-theme="dark"] { color-scheme: dark; --surface-primary: #17253bd9; --surface-secondary: #1b3049; --surface-elevated: #21344e; --surface-input: #16263b; --surface-hover: #203c5b; --surface-selected: #1d3853; --surface-danger: #482a35; --text-primary: #e4efff; --text-secondary: #a5b8cf; --text-muted: #9cadc4; --text-disabled: #71839b; --border-primary: #38516f; --border-subtle: #29425f; --border-strong: #609ddb; --focus-ring: #7fc3f4; --accent-primary: #5fa0da; --accent-foreground: #d8edff; --status-safe-surface: #214d3b; --status-safe-text: #91dab2; --status-info-surface: #203c5b; --status-info-text: #9bcdf5; --status-warning-surface: #4a3b1b; --status-warning-text: #edcf85; --status-danger-surface: #482a35; --status-danger-text: #ffc1c8; }
+
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline-color: var(--focus-ring); }
+input, select, textarea { color-scheme: inherit; }
+input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--accent-primary); }
+.button { background: var(--surface-elevated); border-color: var(--border-primary); color: var(--text-primary); }
+.button:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--border-strong); }
+.button.primary { background: var(--surface-elevated); border-color: var(--surface-elevated); color: var(--accent-foreground); }
+.button.danger { background: var(--surface-danger); border-color: color-mix(in srgb, var(--status-danger-text) 28%, var(--border-primary)); color: var(--status-danger-text); }
+.button:disabled { color: var(--text-disabled); }
+.path-input input, .search-box, .history-filter, .select-setting select, .text-list input, .overview-filters input, .overview-filters select { border-color: var(--border-primary); background: var(--surface-input); color: var(--text-primary); }
+.path-input input:hover, .search-box:hover, .history-filter:hover, .select-setting select:hover, .text-list input:hover, .overview-filters input:hover, .overview-filters select:hover { border-color: var(--border-strong); }
+.path-input input:focus, .search-box:focus-within, .history-filter:focus-within, .select-setting select:focus, .text-list input:focus, .overview-filters input:focus, .overview-filters select:focus { border-color: var(--accent-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus-ring) 24%, transparent); outline: 0; }
+.path-input input::placeholder, .search-box input::placeholder, .text-list input::placeholder, .overview-filters input::placeholder { color: var(--text-muted); opacity: 1; }
+.path-input input:disabled, .search-box:has(input:disabled), .history-filter:has(select:disabled), .select-setting select:disabled, .text-list input:disabled, .overview-filters input:disabled, .overview-filters select:disabled { background: var(--surface-secondary); color: var(--text-disabled); cursor: not-allowed; }
+.search-box { color: var(--text-muted); }
+.search-box input { background: transparent; color: var(--text-primary); }
+.history-filter select { background: transparent; color: var(--text-primary); }
+.mode-switch { background: var(--surface-secondary); }
+.mode-switch button { color: var(--text-secondary); }
+.mode-switch button:hover { background: var(--surface-hover); color: var(--text-primary); }
+.mode-switch button.selected { background: var(--surface-elevated); color: var(--accent-foreground); box-shadow: 0 2px 7px color-mix(in srgb, var(--text-primary) 12%, transparent); }
+.selection-card { border-color: var(--border-primary); background: var(--surface-secondary); }
+.selection-card h3 { color: var(--text-primary); }
+.selection-card p { color: var(--text-secondary); }
+.selection-icon { background: var(--surface-hover); color: var(--accent-primary); }
+
+:root { --scroll-track: #eaf1fa; --scroll-thumb: #5c91c9; --toggle-track: #c7d2df; --toggle-knob: #ffffff; --code-surface: #f1f6fc; }
+:root[data-theme="dark"] { --scroll-track: #142337; --scroll-thumb: #4d789f; --toggle-track: #36516d; --toggle-knob: #d9e8f8; --code-surface: #20354d; }
+.main-content, .history-viewport, .dropdown-menu-list { scrollbar-color: var(--scroll-thumb) var(--scroll-track); scrollbar-width: thin; }
+.main-content::-webkit-scrollbar-track, .history-viewport::-webkit-scrollbar-track, .dropdown-menu-list::-webkit-scrollbar-track { background: var(--scroll-track); }
+.main-content::-webkit-scrollbar-thumb, .history-viewport::-webkit-scrollbar-thumb, .dropdown-menu-list::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-color: var(--scroll-track); }
+.main-content::-webkit-scrollbar-thumb:hover, .history-viewport::-webkit-scrollbar-thumb:hover, .dropdown-menu-list::-webkit-scrollbar-thumb:hover { background-color: var(--accent-primary); }
+input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus, textarea:-webkit-autofill { -webkit-text-fill-color: var(--text-primary); box-shadow: 0 0 0 1000px var(--surface-input) inset; caret-color: var(--text-primary); }
+.toggle { background: var(--toggle-track); }
+.toggle span { background: var(--toggle-knob); }
+.toggle.on { background: var(--accent-primary); }
+.skeleton { background: linear-gradient(90deg, var(--surface-secondary), var(--surface-elevated), var(--surface-secondary)); }
+.empty-state, .empty-report, .loading-state, .loading-screen { color: var(--text-secondary); }
+.empty-state strong, .empty-report h2, .loading-state strong, .scan-center h3, .scan-stats strong, .meta-card div strong { color: var(--text-primary); }
+.file-cell span, .history-file-path, .scan-center > p, .scan-stats, .meta-card div span, .setting-row p, .future-grid small, .future-grid span, .about-grid span, .update-panel p { color: var(--text-secondary); }
+.file-dot, .soft-tag, .api-chips code { background: var(--surface-secondary); color: var(--text-secondary); }
+.api-chips code { background: var(--code-surface); }
+.risk-badge.low, .assessment-status.safe, .assessment-action.safe, .device-status.connected, .device-status.trusted, .policy-value.enabled, .overview-status.healthy { background: var(--status-safe-surface); color: var(--status-safe-text); }
+.risk-badge.medium, .assessment-status.warning, .assessment-action.warning, .device-status.needs-scan, .device-status.scanning, .overview-status.warning { background: var(--status-warning-surface); color: var(--status-warning-text); }
+.risk-badge.high, .assessment-status.danger, .assessment-action.danger, .device-status.blocked { background: var(--status-danger-surface); color: var(--status-danger-text); }
+.assessment-status.info, .assessment-action.info, .device-trust.trusted { background: var(--status-info-surface); color: var(--status-info-text); }
+.assessment-status.neutral, .assessment-action.neutral, .device-status.disconnected, .device-status.unknown, .device-trust.untrusted, .policy-value { background: var(--surface-secondary); color: var(--text-muted); }
+.history-select-control { background: var(--surface-input); border-color: var(--border-primary); }
+.history-select-control:hover { border-color: var(--border-strong); }
+.history-select-control.checked { background: var(--accent-primary); border-color: var(--accent-primary); color: var(--surface-elevated); }
+.history-virtual-list .history-row.selected { background: var(--surface-selected); box-shadow: inset 2px 0 var(--accent-primary); }
+.history-row-remove { color: var(--status-danger-text); }
+.history-row-remove:hover { background: var(--surface-danger); color: var(--status-danger-text); }
+.history-bulk-actions { border-color: var(--border-primary); background: linear-gradient(90deg, var(--surface-selected), var(--surface-secondary)); box-shadow: none; }
+.history-bulk-actions > strong { color: var(--text-primary); }
+.dropdown-menu-list { border-color: var(--border-primary); background: var(--surface-elevated); box-shadow: 0 12px 28px color-mix(in srgb, var(--text-primary) 24%, transparent); }
+.dropdown-menu-list button { color: var(--text-primary); }
+.dropdown-menu-list button:hover, .dropdown-menu-list button[aria-checked="true"] { background: var(--surface-hover); color: var(--accent-foreground); }
+.radar { background: radial-gradient(circle, color-mix(in srgb, var(--accent-primary) 18%, transparent) 0 5%, color-mix(in srgb, var(--accent-primary) 18%, transparent) 6% 7%, transparent 8% 25%, color-mix(in srgb, var(--accent-primary) 20%, transparent) 26% 27%, transparent 28% 48%, color-mix(in srgb, var(--accent-primary) 20%, transparent) 49% 50%, transparent 51%), var(--surface-secondary); border-color: var(--border-primary); box-shadow: inset 0 0 34px color-mix(in srgb, var(--accent-primary) 20%, transparent), 0 10px 26px color-mix(in srgb, var(--text-primary) 12%, transparent); }
+.radar-core { color: var(--accent-foreground); }
+.progress-track { background: var(--surface-secondary); }
+.progress-track span { background: linear-gradient(90deg, var(--accent-primary), #4cc2ce); }
+.scan-insights-header, .priority-queue, .scheduler-metrics > div, .performance-details, .detail-row, .evidence-panel li, .setting-row, .future-controls, .overview-info, .overview-stat-grid > div, .overview-drive, .overview-activity-list button { border-color: var(--border-subtle); }
+.scan-insights-header h3, .scheduler-metrics dd, .priority-queue strong, .performance-copy strong, .performance-details dd, .setting-heading h3, .about-grid strong, .report-summary strong, .detail-row code { color: var(--text-primary); }
+.scan-insight-tabs { border-color: var(--border-primary); background: var(--surface-secondary); }
+.scan-insight-tabs button { color: var(--text-secondary); }
+.scan-insight-tabs button.active { background: var(--surface-elevated); color: var(--accent-foreground); }
+.future-grid > div, .overview-actions a, .overview-actions button, .future-controls button { border-color: var(--border-primary); background: var(--surface-secondary); color: var(--text-secondary); }
+.future-grid > div:hover, .overview-actions a:hover, .overview-actions button:not(:disabled):hover, .future-controls button:not(:disabled):hover { border-color: var(--border-strong); background: var(--surface-hover); color: var(--accent-foreground); }
+.device-card-main:hover, .overview-activity-list button:hover { background: var(--surface-hover); }
+.device-icon, .overview-card-icon, .monitor-icon, .realtime-monitor-icon, .loading-state-icon { background: var(--surface-hover); color: var(--accent-primary); }
+.device-tabs { border-color: var(--border-subtle); }
+.device-tabs button { color: var(--text-secondary); }
+.device-tabs button:hover, .device-tabs button.active { color: var(--accent-foreground); }
+.device-tabs button.active { border-bottom-color: var(--accent-primary); }
+.recommended-panel, .realtime-hero, .security-overview-heading, .overview-summary, .overview-summary.attention { border-color: var(--border-primary); }
+.technical-details { border-color: var(--border-primary); background: var(--surface-primary); }
+.technical-details > summary { color: var(--text-primary); }
+.technical-details[open] > summary { border-color: var(--border-subtle); }
+.technical-details .panel { background: var(--surface-secondary); }
+.topbar-status { background: var(--status-safe-surface); color: var(--status-safe-text); }
+.metric-icon.success, .report-icon, .performance-emblem.light { background: var(--status-safe-surface); color: var(--status-safe-text); }
+.metric-icon.warning, .performance-emblem.deep { background: var(--status-warning-surface); color: var(--status-warning-text); }
+.metric-icon.blue, .performance-emblem.balanced { background: var(--status-info-surface); color: var(--status-info-text); }
+.metric-icon.indigo { background: var(--surface-hover); color: var(--accent-primary); }
+:root[data-theme] .path-input input:focus, :root[data-theme] .search-box:focus-within, :root[data-theme] .history-filter:focus-within, :root[data-theme] .select-setting select:focus, :root[data-theme] .text-list input:focus, :root[data-theme] .overview-filters input:focus, :root[data-theme] .overview-filters select:focus { border-color: var(--accent-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus-ring) 24%, transparent); }
+:root[data-theme] .path-input input:disabled, :root[data-theme] .search-box:has(input:disabled), :root[data-theme] .history-filter:has(select:disabled), :root[data-theme] .select-setting select:disabled, :root[data-theme] .text-list input:disabled, :root[data-theme] .overview-filters input:disabled, :root[data-theme] .overview-filters select:disabled { background: var(--surface-secondary); color: var(--text-disabled); }

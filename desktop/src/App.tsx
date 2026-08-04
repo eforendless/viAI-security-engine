@@ -124,6 +124,7 @@ import { HashRouter, Route, Routes, useLocation, useNavigate } from "react-route
 import { Toaster } from "react-hot-toast";
 import "./experience.css";
 import { getMonitoringStatus, probeEngine } from "./api/engineClient";
+import { notificationPath, type NotificationTarget } from "../electron/windowsNotificationService";
 import { AppShell } from "./layout/AppShell";
 import { useSecurityStore } from "./store/securityStore";
 
@@ -194,6 +195,11 @@ function AppRoutes() {
     navigate(command === "quick-scan" ? "/quick-scan" : command === "realtime" ? "/realtime" : command === "history" ? "/history" : "/settings");
   }), [navigate]);
   useEffect(() => {
+    const unsubscribe = window.viai?.application.onNotificationNavigate((target: NotificationTarget) => navigate(notificationPath(target)));
+    window.viai?.application.rendererReady();
+    return unsubscribe;
+  }, [navigate]);
+  useEffect(() => {
     const preload = () => { void loadQuickScan(); void loadFullScan(); void loadRealtime(); void loadHistory(); void loadDeviceSecurity(); };
     const timer = window.setTimeout(preload, 700);
     return () => window.clearTimeout(timer);
@@ -201,6 +207,6 @@ function AppRoutes() {
   return <Routes location={location}><Route path="/loading-preview" element={<LoadingPreview />} /><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /><Route path="/legal/terms" element={<Legal document="terms" />} /><Route path="/legal/privacy" element={<Legal document="privacy" />} /></Route></Routes>;
 }
 
-function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif" } }} /></HashRouter>; }
+function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif", background: "var(--surface-elevated)", color: "var(--text-primary)", border: "1px solid var(--border-primary)", boxShadow: "0 12px 28px color-mix(in srgb, var(--text-primary) 24%, transparent)" } }} /></HashRouter>; }
 
 export default DesktopApp

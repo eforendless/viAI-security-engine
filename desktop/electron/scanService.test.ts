@@ -107,6 +107,19 @@ test("discovery-backed scans stay active until discovery completes and queued fi
   assert.equal(repository.lastCompletedScan?.filesCompleted, 1);
 });
 
+test("discovery completion reevaluates an empty worker run and archives the scan", async () => {
+  const repository = new MemoryScanRepository();
+  let complete!: () => void;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { if (event === "scanCompleted") complete(); });
+  const scan = await service.start("full", "empty discovery", [], 1, false);
+  await service.finishDiscovery(scan.id);
+  await completed;
+  assert.equal(repository.scan, undefined);
+  assert.equal(repository.lastCompletedScan?.status, "completed");
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 0);
+});
+
 test("a replacement scan starts after a cancelled worker releases the processing lock", async () => {
   const repository = new MemoryScanRepository();
   let releaseFirstAnalysis: (() => void) | undefined;
@@ -345,6 +358,20 @@ test("analysis failures become terminal accounting outcomes and do not block com
   await service.start("full", "analysis failures", ["C:\\samples\\success.exe", "C:\\samples\\failure.exe"], 2);
   await completed;
   assert.equal(repository.lastCompletedScan?.filesCompleted, 2);
+  assert.equal(repository.lastCompletedScan?.errorCount, 1);
+  assert.equal(repository.lastCompletedScan?.status, "completed");
+});
+
+test("a rejected final analysis job settles the completion barrier", async () => {
+  const repository = new MemoryScanRepository();
+  let complete!: () => void;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async () => { throw new Error("last signature verification failed"); }, (event) => { if (event === "scanCompleted") complete(); }, async () => forensic);
+  await service.start("full", "rejected final job", ["C:\\samples\\last.exe"], 1);
+  await completed;
+  assert.equal(repository.scan, undefined);
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 1);
+  assert.equal(repository.lastCompletedScan?.filesRemaining, 0);
   assert.equal(repository.lastCompletedScan?.errorCount, 1);
   assert.equal(repository.lastCompletedScan?.status, "completed");
 });

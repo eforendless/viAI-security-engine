@@ -19,3 +19,13 @@
 @media (prefers-reduced-motion: reduce) { .dropdown-menu-list { animation: none; } }
 @media (max-width: 700px) { .technical-details .details-grid { padding: 10px; } }
 :root[data-theme="dark"] .consumer-summary { background: linear-gradient(105deg, #1c3146, #17253b); }:root[data-theme="dark"] .consumer-summary h3, :root[data-theme="dark"] .consumer-evidence-list strong { color: #e1edfb; }:root[data-theme="dark"] .consumer-summary p, :root[data-theme="dark"] .consumer-evidence-list p { color: #a5b8cf; }:root[data-theme="dark"] .technical-details { border-color: #2d4765; background: #17253b; }:root[data-theme="dark"] .technical-details > summary { color: #d9e8fa; }:root[data-theme="dark"] .technical-details[open] > summary { border-color: #2d4765; }:root[data-theme="dark"] .technical-details .panel { background: #1b2d45; }
+
+.assessment-status.safe, .assessment-action.safe { background: var(--status-safe-surface); color: var(--status-safe-text); }
+.assessment-status.info, .assessment-action.info { background: var(--status-info-surface); color: var(--status-info-text); }
+.assessment-status.warning, .assessment-action.warning { background: var(--status-warning-surface); color: var(--status-warning-text); }
+.assessment-status.danger, .assessment-action.danger { background: var(--status-danger-surface); color: var(--status-danger-text); }
+.assessment-status.neutral, .assessment-action.neutral { background: var(--surface-secondary); color: var(--text-muted); }
+.technical-details { border-color: var(--border-primary); background: var(--surface-primary); }
+.technical-details > summary { color: var(--text-primary); }
+.technical-details[open] > summary { border-color: var(--border-subtle); }
+.technical-details .panel { background: var(--surface-secondary); }

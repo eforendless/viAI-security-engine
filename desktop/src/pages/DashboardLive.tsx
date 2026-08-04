@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { pageMotion } from "../animations/motion";
 import { useSecurityStore } from "../store/securityStore";
+import { dashboardVerdictPresentation } from "../assessmentPresentation";
 import { DeviceInformationCard, HardwareCard, ProtectionCard, QuickActions, RecentActivity, ScanQueueCard, SecuritySummary, StatisticsCard, StorageCard, needsInvestigation, type AnalysisItem, type SystemOverview } from "../components/dashboard/OverviewCards";
 
 const systemOverviewTimeoutMs = 5_000;
@@ -58,8 +59,8 @@ function buildAggregates(history: AnalysisItem[], cached: number, activeSkipped:
   const canonical = history.filter((item) => item.assessment);
   const requiresReview = canonical.filter(needsInvestigation).length;
   const stats = { total: history.length, executables: count(extensions.executables), dlls: count(extensions.dlls), drivers: count(extensions.drivers), scripts: count(extensions.scripts), documents: count(extensions.documents), archives: count(extensions.archives), media: count(extensions.media), requiresReview, investigated: requiresReview, skipped: scanActive ? activeSkipped : undefined, cached };
-  const verdicts = [{ name: "LIKELY_BENIGN", color: "#3f9d72" }, { name: "SUSPICIOUS", color: "#d99b31" }, { name: "LIKELY_MALICIOUS", color: "#d35c63" }, { name: "MALICIOUS", color: "#a83953" }, { name: "UNKNOWN", color: "#8291a8" }];
-  const distribution = [...verdicts.map(({ name, color }) => ({ name, value: canonical.filter((item) => item.assessment?.verdict === name).length, color })), { name: "LEGACY", value: history.length - canonical.length, color: "#8291a8" }].filter((item) => item.value > 0);
+  const verdictColors = ["#3f9d72", "#3f9d72", "#d99b31", "#d35c63", "#8291a8"];
+  const distribution = [...dashboardVerdictPresentation.map(({ value, label }, index) => ({ name: label, value: canonical.filter((item) => item.assessment?.verdict === value).length, color: verdictColors[index] })), { name: "Earlier reports", value: history.length - canonical.length, color: "#8291a8" }].filter((item) => item.value > 0);
   const activity = Array.from({ length: 30 }, (_, index) => { const date = new Date(); date.setHours(0, 0, 0, 0); date.setDate(date.getDate() - (29 - index)); return { day: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }), value: history.filter((item) => new Date(item.analyzedAt).toDateString() === date.toDateString()).length }; });
   return { stats, distribution, activity };
 }

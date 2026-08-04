@@ -27,13 +27,13 @@ declare global {
         exportSettings(): Promise<string | undefined>;
         importSettings(serialized: string): Promise<unknown>;
         clearHistory(scope?: "all" | "low" | "medium" | "high"): Promise<void>;
+        removeHistory(ids: string[]): Promise<unknown>;
         onChanged(listener: (snapshot: unknown) => void): () => void;
         onCommand(listener: (command: "quick-scan" | "realtime" | "history" | "settings") => void): () => void;
       };
       deviceSecurity: {
         snapshot(): Promise<unknown>;
         setTrust(deviceId: string, trusted: boolean): Promise<void>;
-        block(deviceId: string): Promise<void>;
         scan(deviceId: string): Promise<void>;
         onChanged(listener: (update: unknown) => void): () => void;
       };

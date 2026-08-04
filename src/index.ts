@@ -27,7 +27,7 @@ const executableDirectories = [join(homedir(), "Desktop"), join(homedir(), "Docu
 const recentAnalyses: import("./types.js").AnalysisResult[] = [];
 const deviceSecurityManaged = process.env.VIAI_DEVICE_SECURITY === "1";
 let monitoring: MonitoringStatus = {
-  downloadMonitoring: true, executableMonitoring: true, usbMonitoring: !deviceSecurityManaged,
+  downloadMonitoring: false, executableMonitoring: false, usbMonitoring: false,
   executableDirectories: [join(homedir(), "Desktop"), join(homedir(), "Documents")],
   executableExtensions: [".exe", ".dll", ".msi", ".scr", ".bat", ".cmd", ".ps1", ".jar"],
   excludedFolders: [], excludedFiles: [], excludedExtensions: [], scanUnknownFileTypes: false, reportCreated: true, reportModified: true,
@@ -35,6 +35,7 @@ let monitoring: MonitoringStatus = {
   windowsMonitoring: false, monitorScheduledTasks: false, monitorRegistryRunKeys: false, monitorServices: false, monitorDrivers: false,
 };
 const recentObservations: import("./types.js").MonitorObservation[] = [];
+let runtimeMonitoring: NonNullable<MonitoringStatus["runtime"]> = { downloadMonitoring: false, executableMonitoring: false, usbMonitoring: false, processMonitoring: false, windowsMonitoring: false };
 
 eventManager.on("analysis-complete", (analysis) => {
   recentAnalyses.unshift(analysis);
@@ -42,6 +43,7 @@ eventManager.on("analysis-complete", (analysis) => {
   console.log(JSON.stringify({ event: "analysis-complete", path: analysis.filePath, riskScore: analysis.finalRiskScore, decision: analysis.decision }));
 });
 eventManager.on("analysis-error", (error, event) => console.error("analysis error", { path: event.path, error: String(error) }));
+eventManager.on("monitor-error", (error, directory) => console.error("protection monitor error", { directory, error: String(error) }));
 eventManager.on("monitor-observation", (observation: import("./types.js").MonitorObservation) => {
   recentObservations.unshift(observation);
   recentObservations.splice(500);
@@ -58,22 +60,18 @@ function applyMonitoring(): void {
     reportCreated: monitoring.reportCreated,
     reportModified: monitoring.reportModified,
   };
-  if (monitoring.downloadMonitoring) downloadMonitor.start(policy);
-  else downloadMonitor.stop();
-  if (monitoring.executableMonitoring) executableMonitor.watchDirectories(monitoring.executableDirectories, policy);
-  else executableMonitor.stop();
-  if (monitoring.usbMonitoring) usbMonitor.start();
-  else usbMonitor.stop();
-  if (monitoring.processMonitoring) processMonitor.start({ monitorNewProcesses: monitoring.monitorNewProcesses, monitorChildProcesses: monitoring.monitorChildProcesses, monitorSuspiciousCommandLines: monitoring.monitorSuspiciousCommandLines, monitorPowerShell: monitoring.monitorPowerShell, monitorCmd: monitoring.monitorCmd, monitorWScript: monitoring.monitorWScript, monitorMshta: monitoring.monitorMshta, excludedProcesses: monitoring.excludedProcesses });
-  else processMonitor.stop();
-  if (monitoring.windowsMonitoring) windowsConfigurationMonitor.start({ monitorScheduledTasks: monitoring.monitorScheduledTasks, monitorRegistryRunKeys: monitoring.monitorRegistryRunKeys, monitorServices: monitoring.monitorServices, monitorDrivers: monitoring.monitorDrivers });
-  else windowsConfigurationMonitor.stop();
+  runtimeMonitoring.downloadMonitoring = monitoring.downloadMonitoring ? downloadMonitor.start(policy) : (downloadMonitor.stop(), false);
+  runtimeMonitoring.executableMonitoring = monitoring.executableMonitoring ? executableMonitor.watchDirectories(monitoring.executableDirectories, policy) : (executableMonitor.stop(), false);
+  runtimeMonitoring.usbMonitoring = monitoring.usbMonitoring ? (usbMonitor.start(), true) : (usbMonitor.stop(), false);
+  runtimeMonitoring.processMonitoring = monitoring.processMonitoring ? processMonitor.start({ monitorNewProcesses: monitoring.monitorNewProcesses, monitorChildProcesses: monitoring.monitorChildProcesses, monitorSuspiciousCommandLines: monitoring.monitorSuspiciousCommandLines, monitorPowerShell: monitoring.monitorPowerShell, monitorCmd: monitoring.monitorCmd, monitorWScript: monitoring.monitorWScript, monitorMshta: monitoring.monitorMshta, excludedProcesses: monitoring.excludedProcesses }) : (processMonitor.stop(), false);
+  runtimeMonitoring.windowsMonitoring = monitoring.windowsMonitoring ? windowsConfigurationMonitor.start({ monitorScheduledTasks: monitoring.monitorScheduledTasks, monitorRegistryRunKeys: monitoring.monitorRegistryRunKeys, monitorServices: monitoring.monitorServices, monitorDrivers: monitoring.monitorDrivers }) : (windowsConfigurationMonitor.stop(), false);
+  console.info("Protection runtime applied", runtimeMonitoring);
 }
 
 function setMonitoringStatus(updates: Partial<MonitoringStatus>): MonitoringStatus {
   monitoring = { ...monitoring, ...updates, usbMonitoring: deviceSecurityManaged ? false : updates.usbMonitoring ?? monitoring.usbMonitoring };
   applyMonitoring();
-  return monitoring;
+  return { ...monitoring, runtime: { ...runtimeMonitoring } };
 }
 
 applyMonitoring();
@@ -82,7 +80,7 @@ const port = Number(process.env.VIAI_PORT ?? 4117);
 const server = createLocalApi(pipeline, {
   getRecentAnalyses: () => recentAnalyses,
   getRecentObservations: () => recentObservations,
-  getMonitoringStatus: () => monitoring,
+  getMonitoringStatus: () => ({ ...monitoring, runtime: { ...runtimeMonitoring } }),
   setMonitoringStatus,
 }).listen(port, "127.0.0.1", () => console.log(`viAI Local Security Engine listening on http://127.0.0.1:${port}`));
 

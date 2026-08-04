@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { EngineAnalysis, HistoryItem } from "../types";
 
 export interface ScanState {
+  id?: string;
   active: boolean;
   paused: boolean;
   cancelled: boolean;
@@ -12,6 +13,8 @@ export interface ScanState {
   investigationCount: number;
   currentPath: string;
   startedAt?: number;
+  completedAt?: number;
+  elapsedMs?: number;
   status?: "starting" | "running" | "pausing" | "paused" | "resuming" | "cancelling" | "completed" | "cancelled" | "failed";
   stage?: string;
   estimatedRemainingMs?: number;
@@ -36,6 +39,7 @@ interface SecurityState {
   history: HistoryItem[];
   cacheEntries: number;
   scan: ScanState;
+  lastCompletedScan?: ScanState;
   downloadMonitoring: boolean;
   usbMonitoring: boolean;
   executableMonitoring: boolean;
@@ -55,7 +59,7 @@ interface SecurityState {
   setDarkMode(value: boolean): void;
   setPerformanceMode(value: SecurityState["performanceMode"]): void;
   setThreadCount(value: number): void;
-  hydrateBackground(settings: Record<string, unknown>, scan?: Record<string, unknown>, history?: unknown[], activeMonitors?: unknown[], scanCacheEntries?: unknown): void;
+  hydrateBackground(settings: Record<string, unknown>, scan?: Record<string, unknown>, history?: unknown[], activeMonitors?: unknown[], scanCacheEntries?: unknown, lastCompletedScan?: Record<string, unknown>): void;
 }
 
 const idleScan: ScanState = { active: false, paused: false, cancelled: false, mode: "quick", target: "", total: 0, completed: 0, investigationCount: 0, currentPath: "" };
@@ -65,6 +69,7 @@ export const useSecurityStore = create<SecurityState>((set) => ({
   history: [],
   cacheEntries: 0,
   scan: idleScan,
+  lastCompletedScan: undefined,
   downloadMonitoring: false,
   usbMonitoring: false,
   executableMonitoring: false,
@@ -84,12 +89,11 @@ export const useSecurityStore = create<SecurityState>((set) => ({
   setDarkMode: (darkMode) => set({ darkMode }),
   setPerformanceMode: (performanceMode) => set({ performanceMode }),
   setThreadCount: (threadCount) => set({ threadCount }),
-  hydrateBackground: (settings, remoteScan, persistedHistory, activeMonitors, scanCacheEntries) => set((state) => {
-    const status = typeof remoteScan?.status === "string" ? remoteScan.status : undefined;
-    const mode = remoteScan?.mode === "quick" || remoteScan?.mode === "full" || remoteScan?.mode === "folder" ? remoteScan.mode : state.scan.mode;
+  hydrateBackground: (settings, remoteScan, persistedHistory, activeMonitors, scanCacheEntries, remoteLastCompletedScan) => set((state) => {
     const number = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
-    const scanActive = status === "starting" || status === "running" || status === "pausing" || status === "paused" || status === "resuming" || status === "cancelling";
     const monitors = new Set(Array.isArray(activeMonitors) ? activeMonitors.filter((monitor): monitor is string => typeof monitor === "string") : []);
+    const hydratedScan = remoteScan ? scanFromBackground(remoteScan, state.scan, number) : remoteLastCompletedScan ? scanFromBackground(remoteLastCompletedScan, state.lastCompletedScan ?? state.scan, number) : state.scan;
+    const hydratedCompleted = remoteLastCompletedScan ? scanFromBackground(remoteLastCompletedScan, state.lastCompletedScan ?? state.scan, number) : hydratedScan.status === "completed" ? hydratedScan : state.lastCompletedScan;
     return {
       darkMode: "desktopDarkMode" in settings ? settings.desktopDarkMode === true : state.darkMode,
       performanceMode: "performanceMode" in settings ? settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced" : state.performanceMode,
@@ -99,10 +103,21 @@ export const useSecurityStore = create<SecurityState>((set) => ({
       downloadMonitoring: Array.isArray(activeMonitors) ? monitors.has("download-files") : state.downloadMonitoring,
       usbMonitoring: Array.isArray(activeMonitors) ? monitors.has("device-security") : state.usbMonitoring,
       executableMonitoring: Array.isArray(activeMonitors) ? monitors.has("filesystem-candidates") : state.executableMonitoring,
-      scan: remoteScan ? { active: scanActive, paused: status === "paused", cancelled: status === "cancelled", mode, target: typeof remoteScan.target === "string" ? remoteScan.target : "", total: number(remoteScan.totalFiles, 0), completed: number(remoteScan.filesCompleted, 0), investigationCount: number(remoteScan.investigationCount, 0), currentPath: typeof remoteScan.currentFile === "string" ? remoteScan.currentFile : "", startedAt: typeof remoteScan.startedAt === "string" ? Date.parse(remoteScan.startedAt) : undefined, status: status as ScanState["status"], stage: typeof remoteScan.currentStage === "string" ? remoteScan.currentStage : undefined, estimatedRemainingMs: typeof remoteScan.estimatedRemainingMs === "number" ? remoteScan.estimatedRemainingMs : undefined, pausedDurationMs: number(remoteScan.pausedDurationMs, 0), pausedAt: typeof remoteScan.pausedAt === "string" ? Date.parse(remoteScan.pausedAt) : undefined, forensicCount: number(remoteScan.forensicCount, 0), inventoryCount: number(remoteScan.inventoryCount, 0), errorCount: number(remoteScan.errorCount, 0), cacheHits: number(remoteScan.cacheHits, 0), cacheMisses: number(remoteScan.cacheMisses, 0), cacheSkipped: number(remoteScan.cacheSkipped, 0), workersActive: number(remoteScan.workersActive, 0), workersTotal: number(remoteScan.workersTotal, 0), throughputPerSecond: number(remoteScan.throughputPerSecond, 0), cpuPercent: number(remoteScan.cpuPercent, 0), memoryBytes: number(remoteScan.memoryBytes, 0), priorityRemaining: priorityBuckets(remoteScan.priorityRemaining) } : state.scan,
+      scan: hydratedScan,
+      lastCompletedScan: hydratedCompleted,
     };
   }),
 }));
+
+function scanFromBackground(remoteScan: Record<string, unknown>, fallback: ScanState, number: (value: unknown, fallback: number) => number): ScanState {
+  const status = isScanStatus(remoteScan.status) ? remoteScan.status : undefined;
+  const mode = remoteScan.mode === "quick" || remoteScan.mode === "full" || remoteScan.mode === "folder" ? remoteScan.mode : fallback.mode;
+  const active = status === "starting" || status === "running" || status === "pausing" || status === "paused" || status === "resuming" || status === "cancelling";
+  return { id: typeof remoteScan.id === "string" ? remoteScan.id : undefined, active, paused: status === "paused", cancelled: status === "cancelled", mode, target: typeof remoteScan.target === "string" ? remoteScan.target : "", total: number(remoteScan.totalFiles, 0), completed: number(remoteScan.filesCompleted, 0), investigationCount: number(remoteScan.investigationCount, 0), currentPath: typeof remoteScan.currentFile === "string" ? remoteScan.currentFile : "", startedAt: dateValue(remoteScan.startedAt), completedAt: dateValue(remoteScan.completedAt), elapsedMs: typeof remoteScan.elapsedMs === "number" ? number(remoteScan.elapsedMs, 0) : undefined, status, stage: typeof remoteScan.currentStage === "string" ? remoteScan.currentStage : undefined, estimatedRemainingMs: typeof remoteScan.estimatedRemainingMs === "number" ? number(remoteScan.estimatedRemainingMs, 0) : undefined, pausedDurationMs: number(remoteScan.pausedDurationMs, 0), pausedAt: dateValue(remoteScan.pausedAt), forensicCount: number(remoteScan.forensicCount, 0), inventoryCount: number(remoteScan.inventoryCount, 0), errorCount: number(remoteScan.errorCount, 0), cacheHits: number(remoteScan.cacheHits, 0), cacheMisses: number(remoteScan.cacheMisses, 0), cacheSkipped: number(remoteScan.cacheSkipped, 0), workersActive: number(remoteScan.workersActive, 0), workersTotal: number(remoteScan.workersTotal, 0), throughputPerSecond: number(remoteScan.throughputPerSecond, 0), cpuPercent: number(remoteScan.cpuPercent, 0), memoryBytes: number(remoteScan.memoryBytes, 0), priorityRemaining: priorityBuckets(remoteScan.priorityRemaining) };
+}
+
+function isScanStatus(value: unknown): value is NonNullable<ScanState["status"]> { return value === "starting" || value === "running" || value === "pausing" || value === "paused" || value === "resuming" || value === "cancelling" || value === "completed" || value === "cancelled" || value === "failed"; }
+function dateValue(value: unknown): number | undefined { const parsed = typeof value === "string" ? Date.parse(value) : NaN; return Number.isFinite(parsed) ? parsed : undefined; }
 
 function priorityBuckets(value: unknown): ScanState["priorityRemaining"] {
   if (!value || typeof value !== "object") return undefined;

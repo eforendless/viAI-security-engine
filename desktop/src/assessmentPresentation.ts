@@ -76,12 +76,12 @@ export function presentAssessment(record: unknown, engineVersionFallback = "Not 
   ];
 
   if (canonical) {
-    const verdict = string(canonicalAssessment.verdict) ?? "UNKNOWN";
-    const recommendation = string(canonicalAssessment.recommendation) ?? "REVIEW";
+    const verdict = normalizeIdentifier(string(canonicalAssessment.verdict) ?? "UNKNOWN");
+    const recommendation = normalizeIdentifier(string(canonicalAssessment.recommendation) ?? "REVIEW");
     const suspicion = { score: number(assessmentSuspicion.score, undefined), level: string(assessmentSuspicion.level) ?? "unknown" };
     const trust = { score: number(assessmentTrust.score, undefined), level: string(assessmentTrust.level) ?? "unknown" };
     const confidence = { score: number(assessmentConfidence.score, undefined), level: string(assessmentConfidence.level) ?? "unknown" };
-    const priority = string(canonicalAssessment.investigationPriority) ?? "NONE";
+    const priority = normalizeIdentifier(string(canonicalAssessment.investigationPriority) ?? "NONE");
     return {
       model: "v0.3",
       modelLabel: "Assessment schema v0.3",
@@ -150,18 +150,23 @@ export function getAssessmentHistoryCategory(presentation: AssessmentPresentatio
 }
 
 function displayStatus(verdict: string): DisplayMetric {
-  switch (verdict) {
+  switch (normalizeIdentifier(verdict)) {
     case "TRUSTED":
     case "LIKELY_BENIGN": return { label: "Likely safe", tone: "safe" };
-    case "SUSPICIOUS": return { label: "Needs investigation", tone: "warning" };
-    case "HIGHLY_SUSPICIOUS": return { label: "Threat detected", tone: "danger" };
+    case "SUSPICIOUS":
+    case "NEEDS_INVESTIGATION": return { label: "Needs investigation", tone: "warning" };
+    case "HIGHLY_SUSPICIOUS":
+    case "LIKELY_MALICIOUS":
+    case "MALICIOUS": return { label: "Threat detected", tone: "danger" };
+    case "NO_FOLLOW_UP": return { label: "No action needed", tone: "safe" };
     default: return { label: "More information needed", tone: "neutral" };
   }
 }
 
 function displayRecommendation(recommendation: string): DisplayMetric {
-  switch (recommendation) {
+  switch (normalizeIdentifier(recommendation)) {
     case "ALLOW": return { label: "No action required", tone: "safe" };
+    case "NO_FOLLOW_UP": return { label: "No action needed", tone: "safe" };
     case "MONITOR": return { label: "Continue monitoring", tone: "info" };
     case "DYNAMIC_ANALYSIS": return { label: "Deeper analysis recommended", tone: "info" };
     case "SANDBOX": return { label: "Behavior analysis recommended", tone: "warning" };
@@ -187,9 +192,18 @@ function displayTrust(value: AssessmentPresentation["trust"]): DisplayMetric {
 }
 
 function displayPriority(priority: string): DisplayMetric {
-  const normalized = priority.toLowerCase();
+  const normalized = normalizeIdentifier(priority).toLowerCase();
   return { label: normalized === "none" ? "No priority" : normalized.charAt(0).toUpperCase() + normalized.slice(1), tone: normalized === "urgent" || normalized === "high" ? "danger" : normalized === "medium" ? "warning" : normalized === "low" ? "info" : "neutral" };
 }
+
+export function presentAssessmentVerdict(value: unknown): DisplayMetric { return displayStatus(typeof value === "string" ? value : "UNKNOWN"); }
+export const dashboardVerdictPresentation = Object.freeze([
+  { value: "TRUSTED", label: presentAssessmentVerdict("TRUSTED").label },
+  { value: "LIKELY_BENIGN", label: presentAssessmentVerdict("LIKELY_BENIGN").label },
+  { value: "SUSPICIOUS", label: presentAssessmentVerdict("SUSPICIOUS").label },
+  { value: "HIGHLY_SUSPICIOUS", label: presentAssessmentVerdict("HIGHLY_SUSPICIOUS").label },
+  { value: "UNKNOWN", label: presentAssessmentVerdict("UNKNOWN").label },
+] as const);
 
 function explanation(verdict: string, recommendation: string, evidence: readonly string[]): string {
   if (verdict === "TRUSTED" || verdict === "LIKELY_BENIGN") return recommendation === "MONITOR" ? "viAI found only minor static indicators. Continued monitoring is recommended." : "viAI found no significant static indicators requiring immediate action.";
@@ -197,6 +211,8 @@ function explanation(verdict: string, recommendation: string, evidence: readonly
   if (verdict === "HIGHLY_SUSPICIOUS") return "viAI found static indicators that require prompt investigation.";
   return evidence.length ? "viAI retained the available static evidence for further review." : "viAI did not retain enough static evidence for a clear conclusion.";
 }
+
+function normalizeIdentifier(value: string): string { return value.trim().replaceAll(/[-\s]+/g, "_").toUpperCase(); }
 
 function presentEvidence(value: string): ConsumerEvidence {
   if (/entropy/i.test(value)) return { title: "High entropy detected", detail: "This file contains compressed or high-entropy data. This is common in packaged software and does not by itself indicate malicious behavior." };

@@ -29,6 +29,7 @@ export interface MonitoringStatus {
   monitorRegistryRunKeys: boolean;
   monitorServices: boolean;
   monitorDrivers: boolean;
+  runtime?: Partial<Record<"downloadMonitoring" | "executableMonitoring" | "usbMonitoring" | "processMonitoring" | "windowsMonitoring", boolean>>;
 }
 
 export interface LocalApiOptions {

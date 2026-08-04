@@ -17,23 +17,33 @@ export interface FileMonitorPolicy {
 
 export class ExecutableMonitor {
   private watchers: FSWatcher[] = [];
+  private pending = new Map<string, NodeJS.Timeout>();
+  private reported = new Map<string, string>();
+  private failed = false;
 
   constructor(private readonly eventManager: EventManager, private readonly source: FileActivityEvent["source"] = "filesystem") {}
 
-  watchDirectories(directories: readonly string[], policy: FileMonitorPolicy): void {
+  watchDirectories(directories: readonly string[], policy: FileMonitorPolicy): boolean {
     this.stop();
+    this.failed = false;
     for (const directory of directories) {
       if (!existsSync(directory)) continue;
-      const watcher = watch(directory, { recursive: process.platform === "win32" }, (eventType, fileName) => {
-        if (!fileName) return;
-        const filePath = resolve(directory, fileName.toString());
-        const kind = eventType === "rename" ? "created" : "modified";
-        if ((kind === "created" && policy.reportCreated === false) || (kind === "modified" && policy.reportModified === false)) return;
-        void this.reportIfCandidate(filePath, kind, policy);
-      });
-      watcher.on("error", (error) => this.eventManager.emit("monitor-error", error, directory));
-      this.watchers.push(watcher);
+      try {
+        const watcher = watch(directory, { recursive: process.platform === "win32" }, (eventType, fileName) => {
+          if (!fileName) return;
+          const filePath = resolve(directory, fileName.toString());
+          const kind = eventType === "rename" ? "created" : "modified";
+          if ((kind === "created" && policy.reportCreated === false) || (kind === "modified" && policy.reportModified === false)) return;
+          this.scheduleCandidate(filePath, kind, policy);
+        });
+        watcher.on("error", (error) => { this.failed = true; this.eventManager.emit("monitor-error", error, directory); });
+        this.watchers.push(watcher);
+      } catch (error) {
+        this.failed = true;
+        this.eventManager.emit("monitor-error", error, directory);
+      }
     }
+    return this.isActive();
   }
 
   reportExecutionAttempt(filePath: string, parentProcess?: string): void {
@@ -43,12 +53,38 @@ export class ExecutableMonitor {
 
   stop(): void {
     this.watchers.splice(0).forEach((watcher) => watcher.close());
+    this.pending.forEach((timer) => clearTimeout(timer));
+    this.pending.clear();
+    this.reported.clear();
   }
 
-  private async reportIfCandidate(filePath: string, kind: "created" | "modified", policy: FileMonitorPolicy): Promise<void> {
-    if (!isMonitoredCandidate(filePath, policy)) return;
+  isActive(): boolean { return this.watchers.length > 0 && !this.failed; }
+
+  private scheduleCandidate(filePath: string, kind: "created" | "modified", policy: FileMonitorPolicy): void {
+    const normalized = resolve(filePath).toLowerCase();
+    if (isTemporaryDownload(filePath) || !isMonitoredCandidate(filePath, policy)) return;
+    const pending = this.pending.get(normalized);
+    if (pending) clearTimeout(pending);
+    this.pending.set(normalized, setTimeout(() => void this.reportWhenStable(filePath, kind, policy), 750));
+  }
+
+  private async reportWhenStable(filePath: string, kind: "created" | "modified", policy: FileMonitorPolicy): Promise<void> {
+    const normalized = resolve(filePath).toLowerCase();
+    this.pending.delete(normalized);
     try {
-      if ((await stat(filePath)).isFile()) this.eventManager.publish(this.event(filePath, kind));
+      const initial = await stat(filePath);
+      if (!initial.isFile()) return;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+      const current = await stat(filePath);
+      if (!current.isFile()) return;
+      if (initial.size !== current.size || initial.mtimeMs !== current.mtimeMs) {
+        this.scheduleCandidate(filePath, kind, policy);
+        return;
+      }
+      const identity = `${current.size}:${current.mtimeMs}`;
+      if (this.reported.get(normalized) === identity) return;
+      this.reported.set(normalized, identity);
+      this.eventManager.publish(this.event(filePath, kind));
     } catch {
       // A rename notification can arrive after a temporary or deleted file has disappeared.
     }
@@ -86,4 +122,8 @@ function isWithin(filePath: string, folder: string): boolean {
 function normalizeExtension(value: string): string {
   const normalized = value.trim().toLowerCase();
   return normalized.startsWith(".") ? normalized : `.${normalized}`;
+}
+
+export function isTemporaryDownload(filePath: string): boolean {
+  return [".crdownload", ".download", ".opdownload", ".part", ".partial", ".tmp"].includes(extname(filePath).toLowerCase());
 }

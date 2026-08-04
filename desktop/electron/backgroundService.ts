@@ -7,6 +7,7 @@ import type { ScanCacheEntry } from "./fileClassification";
 type SettingValue = boolean | string | number | string[];
 export type BackgroundSettings = Record<string, SettingValue>;
 export type EngineMonitoringUpdate = Record<string, boolean | readonly string[]>;
+type EngineMonitoringResult = { runtime?: Partial<Record<"downloadMonitoring" | "executableMonitoring" | "processMonitoring" | "windowsMonitoring", boolean>> };
 
 export interface BackgroundHistoryRecord {
   id: string;
@@ -26,6 +27,10 @@ export interface BackgroundHistoryRecord {
   trustIndicators?: string[];
   scanDurationMs?: number;
   scanType?: "quick" | "full" | "folder" | "single-file" | "realtime";
+  source?: "download" | "filesystem" | "removable-media";
+  deviceId?: string;
+  deviceVolume?: string;
+  deviceScanTrigger?: "arrival" | "manual";
   fileExtension?: string;
 }
 export type BackgroundHistorySummary = Omit<BackgroundHistoryRecord, "report">;
@@ -35,6 +40,10 @@ export type ScanStatus = "starting" | "running" | "pausing" | "paused" | "resumi
 export interface PersistedScanState {
   id: string;
   mode: "quick" | "full" | "folder";
+  source?: "removable-media";
+  deviceId?: string;
+  deviceVolume?: string;
+  deviceScanTrigger?: "arrival" | "manual";
   target: string;
   startedAt: string;
   updatedAt: string;
@@ -45,6 +54,8 @@ export interface PersistedScanState {
   progress: number;
   currentStage: string;
   status: ScanStatus;
+  completedAt?: string;
+  elapsedMs?: number;
   investigationCount: number;
   pausedAt?: string;
   pausedDurationMs: number;
@@ -81,9 +92,10 @@ export interface BackgroundSnapshot {
   scanCacheEntries: number;
   activeMonitors: string[];
   activeScan?: Omit<PersistedScanState, "pendingFiles">;
+  lastCompletedScan?: Omit<PersistedScanState, "pendingFiles">;
 }
 
-interface StoredBackgroundState { settings?: unknown; history?: unknown; activeScan?: unknown; }
+interface StoredBackgroundState { settings?: unknown; history?: unknown; activeScan?: unknown; lastCompletedScan?: unknown; }
 export interface SaveScanOptions { persist?: boolean; publish?: boolean; }
 export type HistoryClearScope = "all" | "low" | "medium" | "high";
 
@@ -109,6 +121,7 @@ export class BackgroundService {
   private historyLoaded = false;
   private activeMonitors: string[] = [];
   private activeScan?: PersistedScanState;
+  private lastCompletedScan?: PersistedScanState;
   private mutation: Promise<void> = Promise.resolve();
   private readonly historyPath: string;
   private readonly scanCachePath: string;
@@ -117,19 +130,20 @@ export class BackgroundService {
   private historyDirty = false;
   private historyFlushTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void, private readonly engineVersion = "Unavailable") { this.historyPath = join(dirname(dataPath), "background-history.json"); this.scanCachePath = join(dirname(dataPath), "scan-cache.json"); }
+  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<EngineMonitoringResult | void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void, private readonly engineVersion = "Unavailable") { this.historyPath = join(dirname(dataPath), "background-history.json"); this.scanCachePath = join(dirname(dataPath), "scan-cache.json"); }
 
   async initialize(): Promise<BackgroundSnapshot> {
     const stored = await this.read();
     this.settings = validateSettings(stored.settings);
     this.legacyHistory = validateHistory(stored.history);
     this.activeScan = validateScan(stored.activeScan);
+    this.lastCompletedScan = validateScan(stored.lastCompletedScan);
     await this.loadScanCache();
     await this.apply();
     return this.snapshot();
   }
 
-  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: this.history.map(historySummary), scanCacheEntries: this.scanCache.size, activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined }; }
+  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: this.history.map(historySummary), scanCacheEntries: this.scanCache.size, activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined, lastCompletedScan: this.lastCompletedScan ? publicScan(this.lastCompletedScan) : undefined }; }
   currentScan(): PersistedScanState | undefined { return this.activeScan ? { ...this.activeScan, pendingFiles: [...this.activeScan.pendingFiles] } : undefined; }
   async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); await this.persist(); return this.publish(); }); }
   async restoreRecommended(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...recommendedSettings }; await this.apply(); await this.persist(); return this.publish(); }); }
@@ -137,15 +151,25 @@ export class BackgroundService {
   exportSettings(): string { return JSON.stringify(this.settings, null, 2); }
   async importSettings(serialized: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); await this.persist(); return this.publish(); }); }
   async clearHistory(scope: HistoryClearScope = "all"): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = scope === "all" ? [] : this.history.filter((record) => riskLevel(record.riskScore) !== scope); await this.persistHistory(); this.publish(); }); }
-  async clearAllData(): Promise<void> { await this.enqueue(async () => { this.history = []; this.legacyHistory = []; this.historyLoaded = true; this.historyDirty = false; this.activeScan = undefined; this.scanCache.clear(); this.scanCacheDirty = false; await this.apply(); await rm(this.dataPath, { force: true }); await rm(this.historyPath, { force: true }); await rm(this.scanCachePath, { force: true }); await this.persist(); this.publish(); }); }
+  async removeHistory(ids: readonly string[]): Promise<BackgroundSnapshot> {
+    const requested = new Set(ids.filter((id) => typeof id === "string" && id.length > 0 && id.length <= 128));
+    return this.enqueue(async () => {
+      await this.ensureHistoryLoaded();
+      if (requested.size === 0) return this.snapshot();
+      this.history = this.history.filter((record) => !requested.has(record.id));
+      await this.persistHistory();
+      return this.publish();
+    });
+  }
+  async clearAllData(): Promise<void> { await this.enqueue(async () => { this.history = []; this.legacyHistory = []; this.historyLoaded = true; this.historyDirty = false; this.activeScan = undefined; this.lastCompletedScan = undefined; this.scanCache.clear(); this.scanCacheDirty = false; await this.apply(); await rm(this.dataPath, { force: true }); await rm(this.historyPath, { force: true }); await rm(this.scanCachePath, { force: true }); await this.persist(); this.publish(); }); }
   async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
   async historyRecord(id: string): Promise<BackgroundHistoryRecord | undefined> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); return this.history.find((record) => record.id === id); }); }
-  async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
+  async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (scan?.status === "completed") this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
   scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.scanCache.get(cacheKey(filePath)); }
   recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
   async flushScanCache(): Promise<void> { await this.enqueue(async () => { if (!this.scanCacheDirty) return; await mkdir(dirname(this.scanCachePath), { recursive: true }); const temporary = `${this.scanCachePath}.tmp`; await writeFile(temporary, JSON.stringify(Object.fromEntries(this.scanCache)), "utf8"); await rename(temporary, this.scanCachePath); this.scanCacheDirty = false; }); }
 
-  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false): Promise<void> {
+  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false, device?: { id: string; volume: string; trigger: "arrival" | "manual" }): Promise<void> {
     const analysis = analysisRecord(body);
     if (!analysis) return;
     await this.enqueue(async () => {
@@ -154,7 +178,8 @@ export class BackgroundService {
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
       const assessment = assessmentSummary(analysis.report?.assessment ?? analysis.staticAnalysisReport?.assessment);
-      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
+      const source = analysis.evidenceStore?.file?.source === "download" || analysis.evidenceStore?.file?.source === "filesystem" || analysis.evidenceStore?.file?.source === "removable-media" ? analysis.evidenceStore.file.source : undefined;
+      this.history = [{ id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, source, deviceId: device?.id, deviceVolume: device?.volume, deviceScanTrigger: device?.trigger, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined }, ...this.history.filter((record) => !(record.kind === "scan" && record.fileHash === analysis.hashes?.sha256 && record.occurredAt === analysis.analyzedAt))];
       if (deferPersistence) {
         this.historyDirty = true;
         this.scheduleHistoryFlush();
@@ -179,16 +204,25 @@ export class BackgroundService {
     });
   }
 
+  async setRuntimeMonitor(id: string, active: boolean): Promise<BackgroundSnapshot> {
+    return this.enqueue(async () => {
+      this.activeMonitors = active ? [...new Set([...this.activeMonitors, id])] : this.activeMonitors.filter((monitor) => monitor !== id);
+      return this.publish();
+    });
+  }
+
   async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); if (this.history.some((record) => record.id === id)) return; this.history = [{ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: this.engineVersion, detail }, ...this.history]; await this.persistHistory(); this.publish(); }); }
 
   private async apply(): Promise<void> {
     const enabled = this.settings.backgroundProtection === true;
-    const downloads = enabled && this.settings.monitorDownloads === true && this.settings.automaticDownloadScan === true;
+    const downloads = enabled && this.settings.monitorDownloads === true && this.settings.automaticDownloadScan === true && this.settings.scanBrowserDownloads === true;
     const directories = monitoredDirectories(this.settings);
     const extensions = monitoredExtensions(this.settings);
     const eventMonitoring = this.settings.monitorFileCreation === true || this.settings.monitorFileModification === true || this.settings.monitorFileRename === true;
     const filesystem = enabled && directories.length > 0 && (extensions.length > 0 || this.settings.scanUnknownFileTypes === true) && eventMonitoring;
-    await this.applyEngineMonitoring({
+    let runtime: EngineMonitoringResult["runtime"];
+    try {
+      const result = await this.applyEngineMonitoring({
       downloadMonitoring: downloads,
       executableMonitoring: filesystem,
       usbMonitoring: false,
@@ -200,28 +234,31 @@ export class BackgroundService {
       scanUnknownFileTypes: this.settings.scanUnknownFileTypes === true,
       reportCreated: this.settings.monitorFileCreation === true || this.settings.monitorFileRename === true,
       reportModified: this.settings.monitorFileModification === true,
-      processMonitoring: this.settings.monitorNewProcesses === true || this.settings.monitorChildProcesses === true || this.settings.monitorSuspiciousCommandLines === true || this.settings.monitorPowerShell === true || this.settings.monitorCmd === true || this.settings.monitorWScript === true || this.settings.monitorMshta === true,
-      monitorNewProcesses: this.settings.monitorNewProcesses === true,
-      monitorChildProcesses: this.settings.monitorChildProcesses === true,
-      monitorSuspiciousCommandLines: this.settings.monitorSuspiciousCommandLines === true,
-      monitorPowerShell: this.settings.monitorPowerShell === true,
-      monitorCmd: this.settings.monitorCmd === true,
-      monitorWScript: this.settings.monitorWScript === true,
-      monitorMshta: this.settings.monitorMshta === true,
+      processMonitoring: enabled && (this.settings.monitorNewProcesses === true || this.settings.monitorChildProcesses === true || this.settings.monitorSuspiciousCommandLines === true || this.settings.monitorPowerShell === true || this.settings.monitorCmd === true || this.settings.monitorWScript === true || this.settings.monitorMshta === true),
+      monitorNewProcesses: enabled && this.settings.monitorNewProcesses === true,
+      monitorChildProcesses: enabled && this.settings.monitorChildProcesses === true,
+      monitorSuspiciousCommandLines: enabled && this.settings.monitorSuspiciousCommandLines === true,
+      monitorPowerShell: enabled && this.settings.monitorPowerShell === true,
+      monitorCmd: enabled && this.settings.monitorCmd === true,
+      monitorWScript: enabled && this.settings.monitorWScript === true,
+      monitorMshta: enabled && this.settings.monitorMshta === true,
       excludedProcesses: strings(this.settings.excludedProcesses),
-      windowsMonitoring: this.settings.monitorScheduledTasks === true || this.settings.monitorRegistryRunKeys === true || this.settings.monitorServices === true || this.settings.monitorDrivers === true,
-      monitorScheduledTasks: this.settings.monitorScheduledTasks === true,
-      monitorRegistryRunKeys: this.settings.monitorRegistryRunKeys === true,
-      monitorServices: this.settings.monitorServices === true,
-      monitorDrivers: this.settings.monitorDrivers === true,
-    });
+      windowsMonitoring: enabled && (this.settings.monitorScheduledTasks === true || this.settings.monitorRegistryRunKeys === true || this.settings.monitorServices === true || this.settings.monitorDrivers === true),
+      monitorScheduledTasks: enabled && this.settings.monitorScheduledTasks === true,
+      monitorRegistryRunKeys: enabled && this.settings.monitorRegistryRunKeys === true,
+      monitorServices: enabled && this.settings.monitorServices === true,
+      monitorDrivers: enabled && this.settings.monitorDrivers === true,
+      });
+      runtime = result?.runtime;
+    } catch {
+      runtime = { downloadMonitoring: false, executableMonitoring: false, processMonitoring: false, windowsMonitoring: false };
+    }
     this.activeMonitors = enabled ? [
-      ...(downloads ? ["download-files"] : []),
-      ...(filesystem ? ["filesystem-candidates"] : []),
-      ...(this.settings.monitorUsbStorage === true ? ["device-security"] : []),
-      ...(this.settings.monitorNewProcesses === true || this.settings.monitorChildProcesses === true || this.settings.monitorSuspiciousCommandLines === true || this.settings.monitorPowerShell === true || this.settings.monitorCmd === true || this.settings.monitorWScript === true || this.settings.monitorMshta === true ? ["process-observation"] : []),
-      ...(this.settings.monitorStartupFolder === true ? ["windows-startup-folder"] : []),
-      ...(this.settings.monitorScheduledTasks === true || this.settings.monitorRegistryRunKeys === true || this.settings.monitorServices === true || this.settings.monitorDrivers === true ? ["windows-configuration-observation"] : []),
+      ...(downloads && runtime?.downloadMonitoring !== false ? ["download-files"] : []),
+      ...(filesystem && runtime?.executableMonitoring !== false ? ["filesystem-candidates"] : []),
+      ...((this.settings.monitorNewProcesses === true || this.settings.monitorChildProcesses === true || this.settings.monitorSuspiciousCommandLines === true || this.settings.monitorPowerShell === true || this.settings.monitorCmd === true || this.settings.monitorWScript === true || this.settings.monitorMshta === true) && runtime?.processMonitoring !== false ? ["process-observation"] : []),
+      ...(filesystem && this.settings.monitorStartupFolder === true && runtime?.executableMonitoring !== false ? ["windows-startup-folder"] : []),
+      ...((this.settings.monitorScheduledTasks === true || this.settings.monitorRegistryRunKeys === true || this.settings.monitorServices === true || this.settings.monitorDrivers === true) && runtime?.windowsMonitoring !== false ? ["windows-configuration-observation"] : []),
     ] : [];
   }
 
@@ -245,7 +282,7 @@ export class BackgroundService {
     this.legacyHistory = [];
     this.historyLoaded = true;
   }
-  private async persist(): Promise<void> { await mkdir(dirname(this.dataPath), { recursive: true }); const temporary = `${this.dataPath}.tmp`; const legacy = !this.historyLoaded && this.legacyHistory.length ? { history: this.legacyHistory } : {}; await writeFile(temporary, JSON.stringify({ settings: this.settings, activeScan: this.activeScan, ...legacy }, null, 2), "utf8"); await rename(temporary, this.dataPath); }
+  private async persist(): Promise<void> { await mkdir(dirname(this.dataPath), { recursive: true }); const temporary = `${this.dataPath}.tmp`; const legacy = !this.historyLoaded && this.legacyHistory.length ? { history: this.legacyHistory } : {}; await writeFile(temporary, JSON.stringify({ settings: this.settings, activeScan: this.activeScan, lastCompletedScan: this.lastCompletedScan, ...legacy }, null, 2), "utf8"); await rename(temporary, this.dataPath); }
   private async persistHistory(): Promise<void> { await mkdir(dirname(this.historyPath), { recursive: true }); const temporary = `${this.historyPath}.tmp`; await writeFile(temporary, JSON.stringify(this.history, null, 2), "utf8"); await rename(temporary, this.historyPath); }
   private async loadScanCache(): Promise<void> { if (!existsSync(this.scanCachePath)) return; try { const stored = JSON.parse(await readFile(this.scanCachePath, "utf8")) as Record<string, unknown>; for (const [filePath, value] of Object.entries(stored)) { const entry = validateScanCacheEntry(value); if (entry) this.scanCache.set(filePath, entry); } } catch { this.scanCache.clear(); } }
   private async read(): Promise<StoredBackgroundState> { if (!existsSync(this.dataPath)) return {}; try { return JSON.parse(await readFile(this.dataPath, "utf8")) as StoredBackgroundState; } catch { return {}; } }
@@ -279,11 +316,15 @@ function validateScan(value: unknown): PersistedScanState | undefined {
   return {
     id: scan.id,
     mode: scan.mode as PersistedScanState["mode"],
+    source: scan.source === "removable-media" ? scan.source : undefined,
+    deviceId: typeof scan.deviceId === "string" ? scan.deviceId : undefined,
+    deviceVolume: typeof scan.deviceVolume === "string" ? scan.deviceVolume : undefined,
+    deviceScanTrigger: scan.deviceScanTrigger === "arrival" || scan.deviceScanTrigger === "manual" ? scan.deviceScanTrigger : undefined,
     target: typeof scan.target === "string" ? scan.target : "",
     startedAt: typeof scan.startedAt === "string" ? scan.startedAt : new Date().toISOString(),
     updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(),
     currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "",
-    filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined,
+    filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, completedAt: typeof scan.completedAt === "string" ? scan.completedAt : undefined, elapsedMs: typeof scan.elapsedMs === "number" ? number(scan.elapsedMs) : undefined, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined,
     forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, discoveryComplete: scan.discoveryComplete !== false, filesPendingAtCancellation: number(scan.filesPendingAtCancellation), cancelRequestedAt: typeof scan.cancelRequestedAt === "string" ? scan.cancelRequestedAt : undefined, schedulerStoppedAt: typeof scan.schedulerStoppedAt === "string" ? scan.schedulerStoppedAt : undefined, queueClearedAt: typeof scan.queueClearedAt === "string" ? scan.queueClearedAt : undefined, activeWorkersAtCancellation: number(scan.activeWorkersAtCancellation), lastWorkerStoppedAt: typeof scan.lastWorkerStoppedAt === "string" ? scan.lastWorkerStoppedAt : undefined, cancelledAt: typeof scan.cancelledAt === "string" ? scan.cancelledAt : undefined, cancelCompletedAt: typeof scan.cancelCompletedAt === "string" ? scan.cancelCompletedAt : undefined, cancelLatencyMs: typeof scan.cancelLatencyMs === "number" ? number(scan.cancelLatencyMs) : undefined, pendingFiles: [...scan.pendingFiles],
   };
 }

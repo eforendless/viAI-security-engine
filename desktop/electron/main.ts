@@ -5,9 +5,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
-import { DeviceSecurityService, type DeviceSecuritySnapshot } from "./deviceSecurity";
+import { DeviceSecurityService, type DeviceRecord, type DeviceSecuritySnapshot, type DeviceStorageScanTrigger } from "./deviceSecurity";
 import { BackgroundService, type BackgroundSnapshot, type EngineMonitoringUpdate, type PersistedScanState } from "./backgroundService";
-import { ScanService, type ScanEventName } from "./scanService";
+import { ScanService, type ScanEventName, type ScanOrigin } from "./scanService";
 import type { ScanController } from "./scanController";
 import { notificationForAnalysis } from "./analysisNotification";
 import { StartupManager, type StartupProgress } from "./startup";
@@ -35,11 +35,13 @@ let startupSnapshot: BackgroundSnapshot | undefined;
 let updateService: UpdateService | undefined;
 let engineEventsSince = new Date().toISOString();
 const launchedInBackground = process.argv.includes("--viai-background");
+const launchedMinimized = process.argv.includes("--viai-minimized");
 
 if (!isPrimaryInstance) app.quit();
 if (isPrimaryInstance) {
 
 function publishDeviceSecurity(snapshot: DeviceSecuritySnapshot, events: readonly DeviceSecuritySnapshot["history"][number][]): void {
+  void backgroundService?.setRuntimeMonitor("device-security", snapshot.monitoringActive);
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("device-security:changed", { snapshot, events });
   void recordDeviceEvents(snapshot, events);
 }
@@ -196,7 +198,7 @@ async function prepareDashboard(): Promise<void> {
 function announceStartupReady(): void {
   if (startupComplete || quitting || disposing) return;
   startupComplete = true;
-  if (startupSnapshot?.settings.notifyBackgroundStarted === true) showNotification(startupSnapshot.settings, "viAI background protection", "Local monitoring is running.");
+  if (startupSnapshot?.settings.backgroundProtection === true && startupSnapshot.settings.notifyBackgroundStarted === true) showNotification(startupSnapshot.settings, "viAI background protection", "Local monitoring is running.");
   if (splashWindow && !splashWindow.isDestroyed()) splashWindow.webContents.send("startup:ready");
   else completeStartupTransition();
 }
@@ -222,8 +224,8 @@ function configureStartup(): StartupManager {
     { id: "configuration", name: "Loading application configuration", weight: 5, execute: async () => { if (!process.env.VITE_DEV_SERVER_URL && !existsSync(enginePaths().entry)) throw new Error("The packaged local engine is missing."); } },
     { id: "engine", name: "Initializing analysis, rules, and trust engines", weight: 25, dependencies: ["configuration"], execute: async () => { await startEngine(); await waitForEngineReady(); } },
     { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["engine"], execute: async () => { backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground, engineVersion()); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
-    { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["persistence"], execute: async () => { deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; return { monitorUsbStorage: settings?.monitorUsbStorage === true, monitorUsbInsertion: settings?.monitorUsbInsertion === true, automaticallyScanUsb: settings?.automaticallyScanUsb === true }; }); await deviceSecurity.start(); } },
-    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType, _classification, signal) => analyzeEngineFile(filePath, scanType, engineAnalysisTimeoutMs, signal), publishScan); await scanService.recover(); } },
+    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType, _classification, signal, origin) => analyzeEngineFile(filePath, scanType, engineAnalysisTimeoutMs, signal, origin), publishScan); await scanService.recover(); } },
+    { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["recovery"], execute: async () => { deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; const enabled = settings?.backgroundProtection === true; return { monitorUsbStorage: enabled && settings?.monitorUsbStorage === true, monitorUsbInsertion: enabled && settings?.monitorUsbInsertion === true, automaticallyScanUsb: enabled && settings?.automaticallyScanUsb === true }; }, requestRemovableStorageScan); await deviceSecurity.start(); } },
     { id: "notifications", name: "Preparing local notifications", weight: 5, dependencies: ["persistence"], execute: async () => { Notification.isSupported(); } },
     { id: "tray", name: "Creating secure system tray service", weight: 5, dependencies: ["persistence"], execute: async () => { createTray(); } },
     { id: "dashboard", name: "Preparing secure dashboard", weight: 15, dependencies: ["persistence"], execute: async () => { await prepareDashboard(); announceStartupReady(); } },
@@ -250,8 +252,8 @@ async function runStartup(): Promise<void> {
 function completeStartupTransition(): void {
   if (!startupComplete || quitting || disposing) return;
   if (splashWindow && !splashWindow.isDestroyed()) splashWindow.destroy();
-  const startSilently = launchedInBackground && startupSnapshot?.settings.startSilently === true;
-  if (!startSilently || restoreAfterStartup) showMainWindow();
+  const startHidden = launchedInBackground && (startupSnapshot?.settings.startSilently === true || launchedMinimized);
+  if (!startHidden || restoreAfterStartup) showMainWindow();
   startEngineEventPolling();
   void backgroundService?.loadHistory().catch((error) => console.error("Could not load deferred local history", error));
 }
@@ -316,20 +318,42 @@ ipcMain.handle("background:history-record", async (_event, id: string) => {
   if (typeof id !== "string" || id.length > 128) throw new Error("Invalid history record request");
   return backgroundService?.historyRecord(id);
 });
+async function applyBackgroundSettings(snapshot: Awaited<ReturnType<BackgroundService["snapshot"]>> | undefined): Promise<void> {
+  if (!snapshot) return;
+  applyStartup(snapshot.settings);
+  await deviceSecurity?.applyMonitoringPolicy();
+}
+
 ipcMain.handle("background:update", async (_event, changes: Record<string, unknown>) => {
   if (!changes || typeof changes !== "object") throw new Error("Invalid background settings update");
-  return backgroundService?.update(changes);
+  const snapshot = await backgroundService?.update(changes);
+  await applyBackgroundSettings(snapshot);
+  return snapshot;
 });
-ipcMain.handle("background:restore-recommended", () => backgroundService?.restoreRecommended());
-ipcMain.handle("background:restore-factory", () => backgroundService?.restoreFactory());
+ipcMain.handle("background:restore-recommended", async () => {
+  const snapshot = await backgroundService?.restoreRecommended();
+  await applyBackgroundSettings(snapshot);
+  return snapshot;
+});
+ipcMain.handle("background:restore-factory", async () => {
+  const snapshot = await backgroundService?.restoreFactory();
+  await applyBackgroundSettings(snapshot);
+  return snapshot;
+});
 ipcMain.handle("background:export", () => backgroundService?.exportSettings());
 ipcMain.handle("background:import", async (_event, serialized: string) => {
   if (typeof serialized !== "string" || serialized.length > 256_000) throw new Error("Invalid settings import");
-  return backgroundService?.importSettings(serialized);
+  const snapshot = await backgroundService?.importSettings(serialized);
+  await applyBackgroundSettings(snapshot);
+  return snapshot;
 });
 ipcMain.handle("background:clear-history", async (_event, scope: "all" | "low" | "medium" | "high" = "all") => {
   if (!backgroundService || !["all", "low", "medium", "high"].includes(scope)) throw new Error("Invalid history clear scope");
   await backgroundService.clearHistory(scope);
+});
+ipcMain.handle("background:remove-history", async (_event, ids: unknown) => {
+  if (!backgroundService || !Array.isArray(ids) || ids.length > 500 || !ids.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128)) throw new Error("Invalid history removal request");
+  return backgroundService.removeHistory(ids);
 });
 ipcMain.handle("application:clear-local-data", async () => {
   await scanService?.cancelAndWait();
@@ -380,18 +404,14 @@ ipcMain.handle("scan:pause", () => scanService?.pause());
 ipcMain.handle("scan:resume", () => scanService?.resume());
 ipcMain.handle("scan:cancel", () => scanService?.cancel());
 
-ipcMain.handle("device-security:snapshot", () => deviceSecurity?.snapshot() ?? { devices: [], history: [], scans: [], policies: {} });
+ipcMain.handle("device-security:snapshot", () => deviceSecurity?.snapshot() ?? { devices: [], history: [], policies: {}, monitoringActive: false, monitoringState: "disabled" });
 ipcMain.handle("device-security:set-trust", async (_event, deviceId: string, trusted: boolean) => {
   if (typeof deviceId !== "string" || typeof trusted !== "boolean") throw new Error("Invalid device trust request");
   await deviceSecurity?.setTrust(deviceId, trusted);
 });
-ipcMain.handle("device-security:block", async (_event, deviceId: string) => {
-  if (typeof deviceId !== "string") throw new Error("Invalid device block request");
-  await deviceSecurity?.block(deviceId);
-});
 ipcMain.handle("device-security:scan", async (_event, deviceId: string) => {
   if (typeof deviceId !== "string") throw new Error("Invalid device scan request");
-  await deviceSecurity?.scanDevice(deviceId);
+  await deviceSecurity?.requestStorageScan(deviceId);
 });
 
 ipcMain.handle("shell:open-path", async (_event, filePath: string) => shell.openPath(filePath));
@@ -419,14 +439,14 @@ const engineAnalysisConcurrency = 2;
 
 ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
 
-async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs, signal?: AbortSignal): Promise<Record<string, unknown>> {
+async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs, signal?: AbortSignal, origin?: ScanOrigin): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
   try {
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs)))]): AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs)));
     const response = await fetch(engineUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: filePath }),
+      body: JSON.stringify({ path: filePath, ...(origin ? { source: origin.source } : {}) }),
       signal: requestSignal,
     });
     const responseText = await response.text();
@@ -439,7 +459,7 @@ async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | 
     }
     if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
-    await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder");
+    await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder", origin);
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
     notifyAnalysis(body);
     return body;
@@ -519,6 +539,19 @@ function scanConcurrency(mode: "light" | "balanced" | "deep", configured: number
   return Math.max(1, Math.min(requested, engineAnalysisConcurrency));
 }
 
+async function requestRemovableStorageScan(device: DeviceRecord, trigger: DeviceStorageScanTrigger): Promise<void> {
+  if (!scanService || !backgroundService || !device.mountPoint) throw new Error("The scan service is not ready");
+  const root = device.mountPoint.endsWith("\\") ? device.mountPoint : `${device.mountPoint}\\`;
+  if (!existsSync(root)) throw new Error("The removable storage is no longer available");
+  const settings = backgroundService.snapshot().settings;
+  const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
+  const configuredParallel = typeof settings.maximumParallelScans === "number" ? settings.maximumParallelScans : 0;
+  const scan = await scanService.start("folder", root, [], scanConcurrency(performanceMode, configuredParallel), false, { source: "removable-media", id: device.id, volume: root, trigger });
+  const controller = scanService.controllerFor(scan.id);
+  void streamCandidates([root], false, controller, (batch) => scanService?.addCandidates(scan.id, batch) ?? Promise.resolve())
+    .then(() => controller?.signal.aborted ? undefined : scanService?.finishDiscovery(scan.id));
+}
+
 function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = false): Promise<string[]> {
   return new Promise((resolve) => {
     const files: string[] = [];
@@ -547,8 +580,10 @@ function collectCandidates(roots: string[], maxFiles: number, includeAllFiles = 
   });
 }
 
-async function applyEngineMonitoring(updates: EngineMonitoringUpdate): Promise<void> {
-  try { await fetch("http://127.0.0.1:4117/monitoring", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(updates) }); } catch { /* The child engine may still be starting. */ }
+async function applyEngineMonitoring(updates: EngineMonitoringUpdate): Promise<Record<string, unknown>> {
+  const response = await fetch("http://127.0.0.1:4117/monitoring", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(updates) });
+  if (!response.ok) throw new Error(`Could not apply protection monitoring (${response.status})`);
+  return await response.json() as Record<string, unknown>;
 }
 
 function applyStartup(settings: Record<string, unknown>): void {
@@ -585,6 +620,7 @@ function notifyAnalysis(body: Record<string, unknown>): void {
   if (!settings) return;
   const notification = notificationForAnalysis(body);
   if (settings[notification.setting] === true) showNotification(settings, notification.title, notification.body);
+  if (settings.notifyScanCompleted === true && notification.setting !== "notifySafeScan") showNotification(settings, "viAI static analysis complete", notification.body);
 }
 
 async function recordDeviceEvents(snapshot: DeviceSecuritySnapshot, events: readonly DeviceSecuritySnapshot["history"][number][]): Promise<void> {
@@ -595,11 +631,8 @@ async function recordDeviceEvents(snapshot: DeviceSecuritySnapshot, events: read
     if (device?.connectionType !== "usb" && !device?.isStorageDevice) continue;
     await backgroundService?.recordEvent(`Device Security: ${event.detail}`);
     const notify = event.type === "device-connected" ? settings.notifyUsbConnected === true
-      : event.type === "device-removed" ? settings.notifyUsbRemoved === true
-        : event.type === "scan-finished" ? settings.notifyScanCompleted === true
-          : event.type === "threat-detected" ? settings.notifyHighRisk === true
-            : false;
-    if (notify) showNotification(settings, event.type === "threat-detected" ? "viAI removable media alert" : "viAI Device Security", event.detail);
+      : event.type === "device-removed" ? settings.notifyUsbRemoved === true : false;
+    if (notify) showNotification(settings, "viAI Device Security", event.detail);
   }
 }
 
@@ -617,9 +650,12 @@ async function syncEngineEvents(): Promise<void> {
     let newestEventAt = Date.parse(engineEventsSince);
     for (const analysis of body.analyses ?? []) {
       if (!analysis || typeof analysis !== "object") continue;
-      const analyzedAt = (analysis as { analyzedAt?: unknown }).analyzedAt;
+      const record = analysis as { analyzedAt?: unknown; evidenceStore?: { file?: { source?: unknown } } };
+      const analyzedAt = record.analyzedAt;
       if (typeof analyzedAt === "string") newestEventAt = Math.max(newestEventAt, Date.parse(analyzedAt));
-      await backgroundService?.recordAnalysis({ analysis });
+      const source = record.evidenceStore?.file?.source;
+      await backgroundService?.recordAnalysis({ analysis }, source === "download" || source === "filesystem" || source === "removable-media" ? "realtime" : "single-file");
+      notifyAnalysis({ analysis });
     }
     for (const observation of body.observations ?? []) {
       if (!observation || typeof observation !== "object") continue;

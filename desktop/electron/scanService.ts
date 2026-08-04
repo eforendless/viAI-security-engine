@@ -4,6 +4,7 @@ import { classifyDiscoveredFile, type FileClassification, type PriorityBand } fr
 
 export type ScanEventName = "scanStarted" | "scanProgress" | "scanPausing" | "scanPaused" | "scanResuming" | "scanCompleted" | "scanCancelling" | "scanCancelled" | "scanFailed";
 type ScanUpdate = Omit<PersistedScanState, "pendingFiles">;
+export interface ScanOrigin { source: "removable-media"; id: string; volume: string; trigger: "arrival" | "manual"; }
 const checkpointEvery = 16;
 
 export class ScanService {
@@ -19,7 +20,7 @@ export class ScanService {
 
   constructor(
     private readonly background: BackgroundService,
-    private readonly analyze: (filePath: string, scanType: PersistedScanState["mode"], classification: FileClassification, signal?: AbortSignal) => Promise<unknown>,
+    private readonly analyze: (filePath: string, scanType: PersistedScanState["mode"], classification: FileClassification, signal?: AbortSignal, origin?: ScanOrigin) => Promise<unknown>,
     private readonly publish: (event: ScanEventName, scan: ScanUpdate) => void,
     private readonly classify: (filePath: string, cached?: import("./fileClassification").ScanCacheEntry) => Promise<FileClassification> = classifyDiscoveredFile,
   ) {}
@@ -47,7 +48,7 @@ export class ScanService {
     }
   }
 
-  async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number, discoveryComplete = true): Promise<PersistedScanState> {
+  async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number, discoveryComplete = true, origin?: ScanOrigin): Promise<PersistedScanState> {
     const current = this.background.currentScan();
     if (current && !terminal(current.status)) throw new Error("A scan is already running");
     const controller = new ScanController(crypto.randomUUID());
@@ -60,7 +61,7 @@ export class ScanService {
     pendingFiles.forEach((file) => this.knownFiles.add(file));
     controller.markRunning();
     const now = new Date().toISOString();
-    const scan: PersistedScanState = { id: controller.scanId, mode, target, startedAt: now, updatedAt: now, currentFile: discoveryComplete ? "Priority queue ready" : "Discovering files", filesCompleted: 0, filesRemaining: pendingFiles.length, totalFiles: pendingFiles.length, progress: 0, currentStage: discoveryComplete ? "Prioritizing" : "Discovering files", status: "running", investigationCount: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: Math.max(1, Math.min(concurrency, 8)), peakQueueLength: pendingFiles.length, priorityRemaining: this.priorityCounts(pendingFiles), discoveryComplete, pendingFiles };
+    const scan: PersistedScanState = { id: controller.scanId, mode, source: origin?.source, deviceId: origin?.id, deviceVolume: origin?.volume, deviceScanTrigger: origin?.trigger, target, startedAt: now, updatedAt: now, currentFile: discoveryComplete ? "Priority queue ready" : "Discovering files", filesCompleted: 0, filesRemaining: pendingFiles.length, totalFiles: pendingFiles.length, progress: 0, currentStage: discoveryComplete ? "Prioritizing" : "Discovering files", status: "running", investigationCount: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: Math.max(1, Math.min(concurrency, 8)), peakQueueLength: pendingFiles.length, priorityRemaining: this.priorityCounts(pendingFiles), discoveryComplete, pendingFiles };
     await this.background.saveScan(scan);
     this.emit("scanStarted", scan);
     this.startWorkers(scan.id, concurrency);
@@ -188,7 +189,7 @@ export class ScanService {
         this.classifications.set(file, classification);
         const active = this.background.currentScan();
         if (active?.id === scanId && active.status === "running") { active.currentStage = classification.cacheHit ? "Cached inventory" : classification.profile === "forensic" ? "Forensic analysis" : classification.profile === "standard" ? "Standard analysis" : "Inventory"; await this.background.saveScan(active, { persist: false, publish: false }); }
-        if (scan.mode === "quick" || !classification.cacheHit && classification.profile !== "inventory") analysis = await this.analyze(file, scan.mode, classification, controller.signal);
+        if (scan.mode === "quick" || !classification.cacheHit && classification.profile !== "inventory") analysis = await this.analyze(file, scan.mode, classification, controller.signal, scan.source === "removable-media" && scan.deviceId && scan.deviceVolume && scan.deviceScanTrigger ? { source: scan.source, id: scan.deviceId, volume: scan.deviceVolume, trigger: scan.deviceScanTrigger } : undefined);
       } catch (error) { if (!isAbort(error) && !controller.signal.aborted) failed = true; }
       this.inFlight.delete(file);
       if (controller.signal.aborted || controller.state === "cancelling") { await this.finalizeCancellation(scanId); return; }
@@ -229,7 +230,7 @@ export class ScanService {
     await this.background.saveScan(scan); await this.background.flushScanCache?.(); await this.background.flushHistory(); this.emit("scanCancelled", scan);
   }
 
-  private async complete(scanId: string): Promise<void> { const controller = this.controllerFor(scanId); const scan = this.background.currentScan(); if (!controller || controller.state !== "running" || !scan || scan.id !== scanId || scan.status !== "running") return; controller.transition("completed"); scan.status = "completed"; scan.currentStage = "Complete"; scan.currentFile = "Local analysis complete"; scan.progress = 100; scan.estimatedRemainingMs = 0; scan.workersActive = 0; scan.updatedAt = new Date().toISOString(); await this.background.saveScan(scan); await this.background.flushScanCache?.(); await this.background.flushHistory(); this.emit("scanCompleted", scan); }
+  private async complete(scanId: string): Promise<void> { const controller = this.controllerFor(scanId); const scan = this.background.currentScan(); if (!controller || controller.state !== "running" || !scan || scan.id !== scanId || scan.status !== "running") return; const completedAt = new Date(); controller.transition("completed"); scan.status = "completed"; scan.currentStage = "Complete"; scan.currentFile = "Local analysis complete"; scan.progress = 100; scan.estimatedRemainingMs = undefined; scan.workersActive = 0; scan.completedAt = completedAt.toISOString(); scan.elapsedMs = elapsedMs(scan, completedAt.valueOf()); scan.updatedAt = scan.completedAt; await this.background.saveScan(scan); await this.background.flushScanCache?.(); await this.background.flushHistory(); this.emit("scanCompleted", scan); }
   private async fail(scanId: string): Promise<void> { const controller = this.controllerFor(scanId); const scan = this.background.currentScan(); if (!controller || terminal(controller.state) || !scan || scan.id !== scanId || terminal(scan.status)) return; controller.transition("failed"); scan.status = "failed"; scan.currentStage = "Failed"; scan.workersActive = 0; scan.updatedAt = new Date().toISOString(); await this.background.saveScan(scan); await this.background.flushHistory(); this.emit("scanFailed", scan); }
   private async prioritize(files: string[], signal?: AbortSignal): Promise<string[]> { for (let index = 0; index < files.length; index += 16) { checkAbort(signal); await Promise.all(files.slice(index, index + 16).map(async (file) => this.classifications.set(file, await this.classify(file, this.background.scanCacheEntry?.(file))))); } checkAbort(signal); return files.sort((left, right) => (this.classifications.get(right)?.priorityScore ?? 0) - (this.classifications.get(left)?.priorityScore ?? 0)); }
   private emit(event: ScanEventName, scan: PersistedScanState): void { const { pendingFiles: _pendingFiles, ...update } = scan; this.publish(event, update); }

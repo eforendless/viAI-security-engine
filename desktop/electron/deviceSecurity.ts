@@ -1,13 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, opendir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export type DeviceStatus = "connected" | "disconnected" | "blocked" | "needs-scan" | "scanning" | "trusted" | "unknown";
-export type DeviceEventType = "device-connected" | "device-removed" | "device-changed" | "scan-started" | "scan-finished" | "threat-detected" | "user-allowed" | "user-blocked";
+export type DeviceStatus = "connected" | "disconnected" | "unknown";
+export type DeviceEventType = "device-connected" | "device-removed" | "device-changed" | "trust-added" | "trust-removed";
+export type DeviceMonitoringState = "disabled" | "active" | "degraded";
 
 export interface DeviceRecord {
   id: string;
@@ -42,38 +43,17 @@ export interface DeviceHistoryRecord {
   scanId?: string;
 }
 
-export interface DeviceScanRecord {
-  id: string;
-  deviceId: string;
-  startedAt: string;
-  finishedAt?: string;
-  filesScanned: number;
-  threatsFound: number;
-  status: "running" | "finished" | "failed";
-  findings: Array<{ filePath: string; riskScore: number; recommendation: string; evidence: string[]; assessment?: AssessmentSummary }>;
-}
-
-export interface AssessmentSummary {
-  schemaVersion: "0.3";
-  verdict: string;
-  suspicion: { score: number; level: string };
-  trust: { score: number; level: string };
-  confidence: { score: number; level: string };
-  investigationPriority: string;
-  recommendation: string;
-}
-
 export interface DeviceSecuritySnapshot {
   devices: DeviceRecord[];
   history: DeviceHistoryRecord[];
-  scans: DeviceScanRecord[];
-  policies: { automaticallyScanUsb: boolean; blockUnknownStorage: boolean; allowHumanInterfaceDevices: boolean; allowCompanyDevices: boolean; requireTrust: boolean; readOnlyMode: boolean };
+  policies: { automaticallyScanUsb: boolean };
+  monitoringActive: boolean;
+  monitoringState: DeviceMonitoringState;
 }
 
 interface StoredState {
   devices: DeviceRecord[];
   history: DeviceHistoryRecord[];
-  scans: DeviceScanRecord[];
 }
 
 interface PnpDevice {
@@ -84,14 +64,15 @@ interface PnpDevice {
   Service?: string;
 }
 
-interface LogicalDisk {
+export interface LogicalDisk {
   DeviceID?: string;
   VolumeName?: string;
   FileSystem?: string;
   Size?: number;
+  VolumeSerialNumber?: string;
 }
 
-const defaultPolicies = Object.freeze({ automaticallyScanUsb: true, blockUnknownStorage: false, allowHumanInterfaceDevices: true, allowCompanyDevices: true, requireTrust: false, readOnlyMode: false });
+const defaultPolicies = Object.freeze({ automaticallyScanUsb: true });
 
 export interface DeviceMonitoringPolicy {
   readonly monitorUsbStorage: boolean;
@@ -99,17 +80,19 @@ export interface DeviceMonitoringPolicy {
   readonly automaticallyScanUsb: boolean;
 }
 
+export type DeviceStorageScanTrigger = "arrival" | "manual";
+export type DeviceStorageScanRequest = (device: DeviceRecord, trigger: DeviceStorageScanTrigger) => Promise<void>;
+
 export class DeviceSecurityService {
   private devices: DeviceRecord[] = [];
   private history: DeviceHistoryRecord[] = [];
-  private scans: DeviceScanRecord[] = [];
   private listener?: ChildProcessWithoutNullStreams;
   private refreshTimer?: NodeJS.Timeout;
   private refreshQueued = false;
   private started = false;
-  private readonly activeScans = new Set<string>();
+  private monitoringState: DeviceMonitoringState = "disabled";
 
-  constructor(private readonly dataPath: string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true })) {}
+  constructor(private readonly dataPath: string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true }), private readonly scanStorage: DeviceStorageScanRequest = async () => undefined) {}
 
   async start(): Promise<void> {
     if (this.started) return;
@@ -117,16 +100,31 @@ export class DeviceSecurityService {
     const stored = await this.readState();
     this.devices = stored.devices;
     this.history = stored.history;
-    this.scans = stored.scans;
-    await this.refresh();
-    if (this.started && process.platform === "win32") this.startPnPListener();
+    await this.applyMonitoringPolicy();
+  }
+
+  async applyMonitoringPolicy(): Promise<void> {
+    if (!this.started) return;
+    const policy = this.monitoringPolicy();
+    if (policy.monitorUsbStorage || policy.monitorUsbInsertion) {
+      await this.refresh();
+      if (this.started && process.platform === "win32") this.startPnPListener();
+      if (process.platform !== "win32") this.monitoringState = "degraded";
+      this.notify(this.snapshot(), []);
+      return;
+    }
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
+    this.refreshQueued = false;
+    this.listener?.kill();
+    this.listener = undefined;
+    this.monitoringState = "disabled";
+    this.notify(this.snapshot(), []);
   }
 
   async clearData(): Promise<void> {
     this.devices = [];
     this.history = [];
-    this.scans = [];
-    this.activeScans.clear();
     await rm(this.dataPath, { force: true });
     this.notify(this.snapshot(), []);
   }
@@ -138,78 +136,38 @@ export class DeviceSecurityService {
     this.refreshQueued = false;
     this.listener?.kill();
     this.listener = undefined;
-    this.activeScans.clear();
+    this.monitoringState = "disabled";
   }
 
   snapshot(): DeviceSecuritySnapshot {
     const policy = this.monitoringPolicy();
-    return { devices: [...this.devices], history: [...this.history], scans: [...this.scans], policies: { ...defaultPolicies, automaticallyScanUsb: policy.monitorUsbStorage && policy.automaticallyScanUsb } };
+    return { devices: [...this.devices], history: [...this.history], policies: { ...defaultPolicies, automaticallyScanUsb: policy.monitorUsbStorage && policy.automaticallyScanUsb }, monitoringActive: this.monitoringState === "active", monitoringState: this.monitoringState };
   }
 
   async setTrust(deviceId: string, trusted: boolean): Promise<void> {
     const device = this.devices.find((entry) => entry.id === deviceId);
     if (!device) return;
     device.isTrusted = trusted;
-    device.status = trusted ? "trusted" : device.isStorageDevice ? "needs-scan" : "connected";
-    const event = this.record(trusted ? "user-allowed" : "device-changed", deviceId, trusted ? `Trusted by user: ${device.friendlyName}` : `Removed local trust: ${device.friendlyName}`);
+    const event = this.record(trusted ? "trust-added" : "trust-removed", deviceId, trusted ? `Local trust label added: ${device.friendlyName}` : `Local trust label removed: ${device.friendlyName}`);
     await this.persist();
     this.notify(this.snapshot(), [event]);
   }
 
-  async block(deviceId: string): Promise<void> {
+  async requestStorageScan(deviceId: string): Promise<void> {
     const device = this.devices.find((entry) => entry.id === deviceId);
-    if (!device) return;
-    device.isTrusted = false;
-    device.status = "blocked";
-    const event = this.record("user-blocked", deviceId, `Blocked by user: ${device.friendlyName}`);
-    await this.persist();
-    this.notify(this.snapshot(), [event]);
-  }
-
-  async scanDevice(deviceId: string): Promise<void> {
-    const device = this.devices.find((entry) => entry.id === deviceId);
-    if (!device?.isStorageDevice || !device.mountPoint || this.activeScans.has(deviceId) || device.status === "blocked") return;
-    this.activeScans.add(deviceId);
-    const scan: DeviceScanRecord = { id: crypto.randomUUID(), deviceId, startedAt: new Date().toISOString(), filesScanned: 0, threatsFound: 0, status: "running", findings: [] };
-    this.scans = [scan, ...this.scans].slice(0, 500);
-    device.status = "scanning";
-    const started = this.record("scan-started", device.id, `Scan started: ${device.friendlyName}`);
-    await this.persist();
-    this.notify(this.snapshot(), [started]);
-    try {
-      const files = await collectScanTargets(device.mountPoint);
-      let failures = 0;
-      for (const filePath of files) {
-        try {
-          const result = await analyzeRemovableFile(filePath);
-          scan.filesScanned += 1;
-          scan.findings.push({ filePath, riskScore: result.riskScore, recommendation: result.recommendation, evidence: result.evidence, assessment: result.assessment });
-          if (needsInvestigation(result)) scan.threatsFound += 1;
-        } catch {
-          failures += 1;
-        }
-      }
-      scan.status = failures === files.length && files.length > 0 ? "failed" : "finished";
-      scan.finishedAt = new Date().toISOString();
-      const currentDevice = this.devices.find((entry) => entry.id === device.id);
-      if (currentDevice && currentDevice.status !== "blocked") currentDevice.status = currentDevice.isTrusted ? "trusted" : "connected";
-      const events = [this.record("scan-finished", device.id, `Scan finished: ${device.friendlyName}`)];
-      if (scan.threatsFound > 0) events.push(this.record("threat-detected", device.id, `${scan.threatsFound} file${scan.threatsFound === 1 ? "" : "s"} need investigation on ${device.friendlyName}`));
-      await this.persist();
-      this.notify(this.snapshot(), events);
-    } finally {
-      this.activeScans.delete(deviceId);
-    }
+    if (!device?.isStorageDevice || !device.mountPoint || device.status !== "connected") throw new Error("A connected storage device is required for scanning");
+    await this.scanStorage(device, "manual");
   }
 
   private startPnPListener(): void {
     if (this.listener) return;
     const script = "$null = Register-WmiEvent -Class Win32_DeviceChangeEvent -SourceIdentifier viAI_DeviceChange; while ($true) { $event = Wait-Event -SourceIdentifier viAI_DeviceChange; if ($null -ne $event) { Remove-Event -EventIdentifier $event.EventIdentifier; [Console]::Out.WriteLine('change'); } }";
     this.listener = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true });
+    this.monitoringState = "active";
     this.listener.stdout.setEncoding("utf8");
     this.listener.stdout.on("data", () => this.queueRefresh());
-    this.listener.once("error", () => { this.listener = undefined; });
-    this.listener.once("exit", () => { this.listener = undefined; });
+    this.listener.once("error", () => { this.listener = undefined; this.monitoringState = this.monitoringPolicy().monitorUsbStorage || this.monitoringPolicy().monitorUsbInsertion ? "degraded" : "disabled"; this.notify(this.snapshot(), []); });
+    this.listener.once("exit", () => { this.listener = undefined; this.monitoringState = this.monitoringPolicy().monitorUsbStorage || this.monitoringPolicy().monitorUsbInsertion ? "degraded" : "disabled"; this.notify(this.snapshot(), []); });
   }
 
   private queueRefresh(): void {
@@ -223,7 +181,8 @@ export class DeviceSecurityService {
   }
 
   private async refresh(): Promise<void> {
-    if (!this.started) return;
+    const policy = this.monitoringPolicy();
+    if (!this.started || (!policy.monitorUsbStorage && !policy.monitorUsbInsertion)) return;
     const detected = await discoverWindowsDevices();
     const now = new Date().toISOString();
     const prior = new Map(this.devices.map((device) => [device.id, device]));
@@ -231,16 +190,15 @@ export class DeviceSecurityService {
     for (const device of this.devices) {
       if (!next.some((entry) => entry.id === device.id) && device.status !== "disconnected") next.push({ ...device, status: "disconnected", lastSeen: now });
     }
-    const events = changes(this.devices, next, now);
+    const events = policy.monitorUsbInsertion ? changes(this.devices, next, now) : [];
     if (!this.started) return;
     this.devices = next;
     if (events.length > 0) this.history = [...events, ...this.history].slice(0, 2_000);
     await this.persist();
     this.notify(this.snapshot(), events);
-    const policy = this.monitoringPolicy();
     for (const event of events.filter((entry) => entry.type === "device-connected")) {
       const device = this.devices.find((entry) => entry.id === event.deviceId);
-      if (policy.monitorUsbStorage && policy.automaticallyScanUsb && device?.isStorageDevice && device.mountPoint) void this.scanDevice(device.id);
+      if (policy.monitorUsbStorage && policy.automaticallyScanUsb && device?.isStorageDevice && device.mountPoint) void this.scanStorage(device, "arrival").catch(() => undefined);
     }
   }
 
@@ -257,7 +215,7 @@ export class DeviceSecurityService {
       ...device,
       firstSeen: existing?.firstSeen ?? now,
       lastSeen: now,
-      status: existing?.status === "blocked" ? "blocked" : existing?.isTrusted ? "trusted" : device.isStorageDevice ? "needs-scan" : "connected",
+      status: "connected",
       isTrusted: existing?.isTrusted ?? false,
       trustIndicators: indicators,
     };
@@ -272,24 +230,24 @@ export class DeviceSecurityService {
   private async persist(): Promise<void> {
     await mkdir(join(this.dataPath, ".."), { recursive: true });
     const temporary = `${this.dataPath}.tmp`;
-    await writeFile(temporary, JSON.stringify({ devices: this.devices, history: this.history, scans: this.scans }, null, 2), "utf8");
+    await writeFile(temporary, JSON.stringify({ devices: this.devices, history: this.history }, null, 2), "utf8");
     await rename(temporary, this.dataPath);
   }
 
   private async readState(): Promise<StoredState> {
-    if (!existsSync(this.dataPath)) return { devices: [], history: [], scans: [] };
+    if (!existsSync(this.dataPath)) return { devices: [], history: [] };
     try {
       const parsed = JSON.parse(await readFile(this.dataPath, "utf8")) as Partial<StoredState>;
-      return { devices: Array.isArray(parsed.devices) ? parsed.devices : [], history: Array.isArray(parsed.history) ? parsed.history : [], scans: Array.isArray(parsed.scans) ? parsed.scans : [] };
+      return { devices: Array.isArray(parsed.devices) ? parsed.devices : [], history: Array.isArray(parsed.history) ? parsed.history : [] };
     } catch {
-      return { devices: [], history: [], scans: [] };
+      return { devices: [], history: [] };
     }
   }
 }
 
 async function discoverWindowsDevices(): Promise<Array<Omit<DeviceRecord, "firstSeen" | "lastSeen" | "status" | "isTrusted" | "trustIndicators">>> {
   if (process.platform !== "win32") return [];
-  const script = "$pnp = Get-CimInstance Win32_PnPEntity | Select-Object DeviceID,Name,Manufacturer,PNPClass,Service; $disks = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=2' | Select-Object DeviceID,VolumeName,FileSystem,Size; [PSCustomObject]@{ pnp = @($pnp); disks = @($disks) } | ConvertTo-Json -Depth 3 -Compress";
+  const script = "$pnp = Get-CimInstance Win32_PnPEntity | Select-Object DeviceID,Name,Manufacturer,PNPClass,Service; $disks = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=2' | Select-Object DeviceID,VolumeName,FileSystem,Size,VolumeSerialNumber; [PSCustomObject]@{ pnp = @($pnp); disks = @($disks) } | ConvertTo-Json -Depth 3 -Compress";
   try {
     const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
     const data = JSON.parse(stdout) as { pnp?: PnpDevice[]; disks?: LogicalDisk[] };
@@ -322,9 +280,9 @@ function toPnpRecord(device: PnpDevice): Omit<DeviceRecord, "firstSeen" | "lastS
   };
 }
 
-function toStorageRecord(disk: LogicalDisk): Omit<DeviceRecord, "firstSeen" | "lastSeen" | "status" | "isTrusted" | "trustIndicators"> {
+export function toStorageRecord(disk: LogicalDisk): Omit<DeviceRecord, "firstSeen" | "lastSeen" | "status" | "isTrusted" | "trustIndicators"> {
   return {
-    id: `volume:${disk.DeviceID}`,
+    id: `volume:${disk.VolumeSerialNumber || disk.DeviceID}`,
     friendlyName: `${disk.VolumeName || "Removable storage"} (${disk.DeviceID})`,
     deviceType: "usb-storage",
     connectionType: "usb",
@@ -367,47 +325,4 @@ function changes(previous: readonly DeviceRecord[], next: readonly DeviceRecord[
 
 function event(type: DeviceEventType, deviceId: string, detail: string, occurredAt: string): DeviceHistoryRecord {
   return { id: crypto.randomUUID(), type, deviceId, detail, occurredAt };
-}
-
-const scanExtensions = new Set([".exe", ".dll", ".msi", ".scr", ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".js", ".jse", ".wsf", ".jar", ".doc", ".docm", ".docx", ".xls", ".xlsm", ".xlsx", ".ppt", ".pptm", ".pptx", ".zip", ".rar", ".7z"]);
-
-async function collectScanTargets(root: string, maximum = 250): Promise<string[]> {
-  const files: string[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    if (files.length >= maximum) return;
-    try {
-      const entries = await opendir(directory);
-      for await (const entry of entries) {
-        if (files.length >= maximum) break;
-        const filePath = join(directory, entry.name);
-        if (entry.isDirectory()) {
-          if (!new Set(["$recycle.bin", "system volume information"]).has(entry.name.toLowerCase())) await visit(filePath);
-        } else if (entry.isFile() && scanExtensions.has(extname(entry.name).toLowerCase())) files.push(filePath);
-      }
-    } catch {
-      return;
-    }
-  };
-  await visit(root);
-  return files;
-}
-
-export function needsInvestigation(result: { riskScore: number; recommendation: string; assessment?: AssessmentSummary }): boolean {
-  if (result.assessment) return ["MEDIUM", "HIGH", "URGENT"].includes(result.assessment.investigationPriority) || ["REVIEW", "DYNAMIC_ANALYSIS"].includes(result.assessment.recommendation);
-  return result.riskScore >= 61 || result.recommendation === "AI_ANALYSIS";
-}
-
-async function analyzeRemovableFile(filePath: string): Promise<{ riskScore: number; recommendation: string; evidence: string[]; assessment?: AssessmentSummary }> {
-  const response = await fetch("http://127.0.0.1:4117/analyze", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: filePath, source: "removable-media" }) });
-  const result = await response.json() as Partial<{ riskScore: number; recommendation: string; evidence: string[]; assessment: unknown }>;
-  if (!response.ok || typeof result.riskScore !== "number" || typeof result.recommendation !== "string" || !Array.isArray(result.evidence)) throw new Error("Local analysis failed");
-  return { riskScore: result.riskScore, recommendation: result.recommendation, evidence: result.evidence, assessment: assessmentFromResponse(result.assessment) };
-}
-
-function assessmentFromResponse(value: unknown): AssessmentSummary | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const assessment = value as Record<string, unknown>;
-  const component = (name: string) => { const value = assessment[name]; return value && typeof value === "object" && typeof (value as Record<string, unknown>).score === "number" && typeof (value as Record<string, unknown>).level === "string" ? { score: (value as Record<string, unknown>).score as number, level: (value as Record<string, unknown>).level as string } : undefined; };
-  const suspicion = component("suspicion"); const trust = component("trust"); const confidence = component("confidence");
-  return assessment.schemaVersion === "0.3" && typeof assessment.verdict === "string" && typeof assessment.investigationPriority === "string" && typeof assessment.recommendation === "string" && suspicion && trust && confidence ? { schemaVersion: "0.3", verdict: assessment.verdict, suspicion, trust, confidence, investigationPriority: assessment.investigationPriority, recommendation: assessment.recommendation } : undefined;
 }

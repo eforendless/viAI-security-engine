@@ -27,7 +27,28 @@ test("scan recovery resumes persisted work and publishes synchronized lifecycle 
   assert.equal(repository.scan?.status, "completed");
   assert.equal(repository.scan?.filesCompleted, 1);
   assert.equal(repository.scan?.progress, 100);
+  assert.equal(repository.scan?.estimatedRemainingMs, undefined);
+  assert.ok(typeof repository.scan?.completedAt === "string");
+  assert.ok((repository.scan?.elapsedMs ?? 0) >= 0);
   assert.deepEqual(events, ["scanProgress", "scanCompleted"]);
+});
+
+test("a completed scan remains terminal until a new scan creates a replacement session", async () => {
+  const repository = new MemoryScanRepository();
+  let completeFirst: (() => void) | undefined;
+  let completeSecond: (() => void) | undefined;
+  const firstDone = new Promise<void>((resolve) => { completeFirst = resolve; });
+  const secondDone = new Promise<void>((resolve) => { completeSecond = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { if (event === "scanCompleted") { if (repository.scan?.id === first.id) completeFirst?.(); else completeSecond?.(); } });
+  const first = await service.start("full", "Windows system locations", ["C:\\samples\\first.exe"], 1);
+  await firstDone;
+  assert.equal(repository.scan?.status, "completed");
+  assert.equal(repository.scan?.progress, 100);
+  const second = await service.start("full", "Windows system locations", ["C:\\samples\\second.exe"], 1);
+  assert.notEqual(second.id, first.id);
+  assert.equal(repository.scan?.status, "running");
+  assert.equal(repository.scan?.filesCompleted, 0);
+  await secondDone;
 });
 
 test("large scans checkpoint progress without persisting every file", async () => {

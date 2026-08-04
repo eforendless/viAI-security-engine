@@ -25,13 +25,13 @@ contextBridge.exposeInMainWorld("viai", {
     exportSettings: () => ipcRenderer.invoke("background:export") as Promise<string | undefined>,
     importSettings: (serialized: string) => ipcRenderer.invoke("background:import", serialized) as Promise<unknown>,
     clearHistory: (scope: "all" | "low" | "medium" | "high" = "all") => ipcRenderer.invoke("background:clear-history", scope) as Promise<void>,
+    removeHistory: (ids: string[]) => ipcRenderer.invoke("background:remove-history", ids) as Promise<unknown>,
     onChanged: (listener: (snapshot: unknown) => void) => { const handler = (_event: Electron.IpcRendererEvent, snapshot: unknown) => listener(snapshot); ipcRenderer.on("background:changed", handler); return () => ipcRenderer.removeListener("background:changed", handler); },
     onCommand: (listener: (command: "quick-scan" | "realtime" | "history" | "settings") => void) => { const handler = (_event: Electron.IpcRendererEvent, command: "quick-scan" | "realtime" | "history" | "settings") => listener(command); ipcRenderer.on("background:command", handler); return () => ipcRenderer.removeListener("background:command", handler); },
   },
   deviceSecurity: {
     snapshot: () => ipcRenderer.invoke("device-security:snapshot") as Promise<unknown>,
     setTrust: (deviceId: string, trusted: boolean) => ipcRenderer.invoke("device-security:set-trust", deviceId, trusted) as Promise<void>,
-    block: (deviceId: string) => ipcRenderer.invoke("device-security:block", deviceId) as Promise<void>,
     scan: (deviceId: string) => ipcRenderer.invoke("device-security:scan", deviceId) as Promise<void>,
     onChanged: (listener: (update: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, update: unknown) => listener(update);

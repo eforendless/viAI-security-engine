@@ -21,11 +21,13 @@ export class WindowsConfigurationMonitor {
 
   constructor(private readonly eventManager: EventManager) {}
 
-  start(policy: WindowsConfigurationPolicy, intervalMilliseconds = 15_000): void {
+  start(policy: WindowsConfigurationPolicy, intervalMilliseconds = 15_000): boolean {
     this.policy = policy;
-    if (this.timer) return;
+    if (this.timer) return true;
+    if (process.platform !== "win32") return false;
     void this.refresh(true);
     this.timer = setInterval(() => void this.refresh(false), intervalMilliseconds);
+    return true;
   }
 
   stop(): void {
@@ -33,6 +35,8 @@ export class WindowsConfigurationMonitor {
     this.timer = undefined;
     this.snapshots.clear();
   }
+
+  isActive(): boolean { return this.timer !== undefined; }
 
   private async refresh(initial: boolean): Promise<void> {
     if (process.platform !== "win32" || !this.policy) return;

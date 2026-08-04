@@ -73,10 +73,10 @@ export function LoadingState({ title = "Loading local data", detail = "Retrievin
   return <LoadingScreen title={title} detail={detail} />;
 }
 
-export function ConfirmDialog({ open, title, detail, confirmLabel, onCancel, onConfirm, children }: { open: boolean; title: string; detail: string; confirmLabel: string; onCancel(): void; onConfirm(): void; children?: ReactNode }) {
+export function ConfirmDialog({ open, title, detail, confirmLabel, confirmDisabled = false, onCancel, onConfirm, children }: { open: boolean; title: string; detail: string; confirmLabel: string; confirmDisabled?: boolean; onCancel(): void; onConfirm(): void; children?: ReactNode }) {
   useEffect(() => { if (!open) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancel(); }; document.addEventListener("keydown", closeOnEscape); return () => document.removeEventListener("keydown", closeOnEscape); }, [open, onCancel]);
   if (!open) return null;
-  return createPortal(<div className="confirm-backdrop" role="presentation" onMouseDown={onCancel}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" onMouseDown={(event) => event.stopPropagation()}><h2 id="confirm-dialog-title">{title}</h2><p>{detail}</p>{children}<div className="confirm-actions"><Button type="button" onClick={onCancel}>Cancel</Button><Button type="button" className="danger" onClick={onConfirm}>{confirmLabel}</Button></div></section></div>, document.body);
+  return createPortal(<div className="confirm-backdrop" role="presentation" onMouseDown={onCancel}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" onMouseDown={(event) => event.stopPropagation()}><h2 id="confirm-dialog-title">{title}</h2><p>{detail}</p>{children}<div className="confirm-actions"><Button type="button" disabled={confirmDisabled} onClick={onCancel}>Cancel</Button><Button type="button" className="danger" disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</Button></div></section></div>, document.body);
 }
 
 export type IconType = LucideIcon;

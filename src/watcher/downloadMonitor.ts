@@ -10,11 +10,13 @@ export class DownloadMonitor {
     this.monitor = new ExecutableMonitor(eventManager, "download");
   }
 
-  start(policy: FileMonitorPolicy): void {
-    this.monitor.watchDirectories(this.downloadDirectories, policy);
+  start(policy: FileMonitorPolicy): boolean {
+    return this.monitor.watchDirectories(this.downloadDirectories, policy);
   }
 
   stop(): void {
     this.monitor.stop();
   }
+
+  isActive(): boolean { return this.monitor.isActive(); }
 }

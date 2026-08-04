@@ -138,8 +138,14 @@ export class BackgroundService {
     this.legacyHistory = validateHistory(stored.history);
     this.activeScan = validateScan(stored.activeScan);
     this.lastCompletedScan = validateScan(stored.lastCompletedScan);
+    const completedActiveScan = this.activeScan?.status === "completed" ? this.activeScan : undefined;
+    if (completedActiveScan) {
+      this.lastCompletedScan ??= { ...completedActiveScan, pendingFiles: [...completedActiveScan.pendingFiles] };
+      this.activeScan = undefined;
+    }
     await this.loadScanCache();
     await this.apply();
+    if (completedActiveScan) await this.persist();
     return this.snapshot();
   }
 
@@ -165,6 +171,7 @@ export class BackgroundService {
   async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
   async historyRecord(id: string): Promise<BackgroundHistoryRecord | undefined> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); return this.history.find((record) => record.id === id); }); }
   async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (scan?.status === "completed") this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
+  async completeScan(scanId: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { const scan = this.activeScan; if (!scan || scan.id !== scanId || scan.status !== "completed") return this.snapshot(); this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; this.activeScan = undefined; await this.persist(); return this.publish(); }); }
   scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.scanCache.get(cacheKey(filePath)); }
   recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
   async flushScanCache(): Promise<void> { await this.enqueue(async () => { if (!this.scanCacheDirty) return; await mkdir(dirname(this.scanCachePath), { recursive: true }); const temporary = `${this.scanCachePath}.tmp`; await writeFile(temporary, JSON.stringify(Object.fromEntries(this.scanCache)), "utf8"); await rename(temporary, this.scanCachePath); this.scanCacheDirty = false; }); }

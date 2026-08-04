@@ -62,13 +62,13 @@ interface SecurityState {
   hydrateBackground(settings: Record<string, unknown>, scan?: Record<string, unknown>, history?: unknown[], activeMonitors?: unknown[], scanCacheEntries?: unknown, lastCompletedScan?: Record<string, unknown>): void;
 }
 
-const idleScan: ScanState = { active: false, paused: false, cancelled: false, mode: "quick", target: "", total: 0, completed: 0, investigationCount: 0, currentPath: "" };
+function idleScan(): ScanState { return { active: false, paused: false, cancelled: false, mode: "quick", target: "", total: 0, completed: 0, investigationCount: 0, currentPath: "", elapsedMs: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: 0, throughputPerSecond: 0 }; }
 
 export const useSecurityStore = create<SecurityState>((set) => ({
   engineOnline: false,
   history: [],
   cacheEntries: 0,
-  scan: idleScan,
+  scan: idleScan(),
   lastCompletedScan: undefined,
   downloadMonitoring: false,
   usbMonitoring: false,
@@ -92,8 +92,12 @@ export const useSecurityStore = create<SecurityState>((set) => ({
   hydrateBackground: (settings, remoteScan, persistedHistory, activeMonitors, scanCacheEntries, remoteLastCompletedScan) => set((state) => {
     const number = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
     const monitors = new Set(Array.isArray(activeMonitors) ? activeMonitors.filter((monitor): monitor is string => typeof monitor === "string") : []);
-    const hydratedScan = remoteScan ? scanFromBackground(remoteScan, state.scan, number) : remoteLastCompletedScan ? scanFromBackground(remoteLastCompletedScan, state.lastCompletedScan ?? state.scan, number) : state.scan;
-    const hydratedCompleted = remoteLastCompletedScan ? scanFromBackground(remoteLastCompletedScan, state.lastCompletedScan ?? state.scan, number) : hydratedScan.status === "completed" ? hydratedScan : state.lastCompletedScan;
+    const incomingScan = remoteScan ? scanFromBackground(remoteScan, state.scan, number) : undefined;
+    const incomingCompleted = incomingScan?.status === "completed" ? incomingScan : undefined;
+    const hydratedCompleted = remoteLastCompletedScan ? scanFromBackground(remoteLastCompletedScan, state.lastCompletedScan ?? state.scan, number) : incomingCompleted ?? state.lastCompletedScan;
+    const archivedScanId = hydratedCompleted?.id;
+    const resetToIdle = incomingScan?.status === "completed" || incomingScan?.id === archivedScanId || (!incomingScan && (Boolean(remoteLastCompletedScan) || state.scan.status === "completed"));
+    const hydratedScan = resetToIdle ? idleScan() : incomingScan ?? state.scan;
     return {
       darkMode: "desktopDarkMode" in settings ? settings.desktopDarkMode === true : state.darkMode,
       performanceMode: "performanceMode" in settings ? settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced" : state.performanceMode,

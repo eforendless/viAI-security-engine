@@ -6,10 +6,12 @@ import { ScanService, type ScanEventName } from "./scanService";
 
 class MemoryScanRepository {
   scan?: PersistedScanState;
+  lastCompletedScan?: PersistedScanState;
   saves = 0;
   readonly cache = new Map<string, { size: number; mtimeMs: number; analyzedAt: string; priorityScore: number }>();
   currentScan(): PersistedScanState | undefined { return this.scan ? { ...this.scan, pendingFiles: [...this.scan.pendingFiles] } : undefined; }
   async saveScan(scan: PersistedScanState | undefined, options: { persist?: boolean } = {}): Promise<void> { if (options.persist !== false) this.saves += 1; this.scan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; }
+  async completeScan(scanId: string): Promise<void> { if (this.scan?.id !== scanId || this.scan.status !== "completed") return; this.lastCompletedScan = { ...this.scan, pendingFiles: [...this.scan.pendingFiles] }; this.scan = undefined; }
   async flushHistory(): Promise<void> {}
   scanCacheEntry(filePath: string) { return this.cache.get(filePath); }
   recordScanCache(filePath: string, entry: { size: number; mtimeMs: number; analyzedAt: string; priorityScore: number }): void { this.cache.set(filePath, entry); }
@@ -24,30 +26,30 @@ test("scan recovery resumes persisted work and publishes synchronized lifecycle 
     const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { events.push(event); if (event === "scanCompleted") resolve(); });
     void service.recover();
   });
-  assert.equal(repository.scan?.status, "completed");
-  assert.equal(repository.scan?.filesCompleted, 1);
-  assert.equal(repository.scan?.progress, 100);
-  assert.equal(repository.scan?.estimatedRemainingMs, undefined);
-  assert.ok(typeof repository.scan?.completedAt === "string");
-  assert.ok((repository.scan?.elapsedMs ?? 0) >= 0);
+  assert.equal(repository.scan, undefined);
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 1);
+  assert.equal(repository.lastCompletedScan?.progress, 100);
+  assert.equal(repository.lastCompletedScan?.estimatedRemainingMs, undefined);
+  assert.ok(typeof repository.lastCompletedScan?.completedAt === "string");
+  assert.ok((repository.lastCompletedScan?.elapsedMs ?? 0) >= 0);
   assert.deepEqual(events, ["scanProgress", "scanCompleted"]);
 });
 
-test("a completed scan remains terminal until a new scan creates a replacement session", async () => {
+test("a completed scan is archived before a new session starts", async () => {
   const repository = new MemoryScanRepository();
   let completeFirst: (() => void) | undefined;
   let completeSecond: (() => void) | undefined;
   const firstDone = new Promise<void>((resolve) => { completeFirst = resolve; });
   const secondDone = new Promise<void>((resolve) => { completeSecond = resolve; });
-  const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { if (event === "scanCompleted") { if (repository.scan?.id === first.id) completeFirst?.(); else completeSecond?.(); } });
+  const service = new ScanService(repository as unknown as BackgroundService, async () => undefined, (event) => { if (event === "scanCompleted") { if (repository.lastCompletedScan?.id === first.id) completeFirst?.(); else completeSecond?.(); } });
   const first = await service.start("full", "Windows system locations", ["C:\\samples\\first.exe"], 1);
   await firstDone;
-  assert.equal(repository.scan?.status, "completed");
-  assert.equal(repository.scan?.progress, 100);
+  assert.equal(repository.scan, undefined);
+  assert.equal(repository.lastCompletedScan?.progress, 100);
   const second = await service.start("full", "Windows system locations", ["C:\\samples\\second.exe"], 1);
   assert.notEqual(second.id, first.id);
-  assert.equal(repository.scan?.status, "running");
-  assert.equal(repository.scan?.filesCompleted, 0);
+  assert.equal(repository.currentScan()?.status, "running");
+  assert.equal(repository.currentScan()?.filesCompleted, 0);
   await secondDone;
 });
 
@@ -58,9 +60,9 @@ test("large scans checkpoint progress without persisting every file", async () =
     const service = new ScanService(repository as unknown as BackgroundService, async (_filePath, _mode) => ({ riskScore: 72, recommendation: "AI_ANALYSIS" }), (event) => { if (event === "scanCompleted") resolve(); });
     void service.start("full", "Windows system locations", files, 1);
   });
-  assert.equal(repository.scan?.status, "completed");
-  assert.equal(repository.scan?.filesCompleted, files.length);
-  assert.equal(repository.scan?.investigationCount, files.length);
+  assert.equal(repository.scan, undefined);
+  assert.equal(repository.lastCompletedScan?.filesCompleted, files.length);
+  assert.equal(repository.lastCompletedScan?.investigationCount, files.length);
   assert.ok(repository.saves <= 6, `expected bounded checkpoint writes, received ${repository.saves}`);
 });
 
@@ -70,7 +72,7 @@ test("canonical assessment overrides conflicting legacy risk score for investiga
     const service = new ScanService(repository as unknown as BackgroundService, async () => ({ riskScore: 99, recommendation: "AI_ANALYSIS", report: { assessment: { schemaVersion: "0.3", verdict: "LIKELY_BENIGN", suspicion: { score: 18, level: "low" }, trust: { score: 91, level: "high" }, confidence: { score: 95, level: "high" }, investigationPriority: "LOW", recommendation: "ALLOW" } } }), (event) => { if (event === "scanCompleted") resolve(); });
     void service.start("full", "Windows system locations", ["C:\\samples\\assessment-wins.exe"], 1);
   });
-  assert.equal(repository.scan?.investigationCount, 0);
+  assert.equal(repository.lastCompletedScan?.investigationCount, 0);
 });
 
 test("quick scan analyzes an explicitly selected file even when scheduler classification is inventory", async () => {
@@ -82,7 +84,7 @@ test("quick scan analyzes an explicitly selected file even when scheduler classi
     void service.start("quick", "C:\\samples\\chosen.jpg", ["C:\\samples\\chosen.jpg"], 1);
   });
   assert.equal(analyzed, true);
-  assert.equal(repository.scan?.status, "completed");
+  assert.equal(repository.lastCompletedScan?.status, "completed");
 });
 
 test("discovery-backed scans stay active until discovery completes and queued files drain", async () => {
@@ -96,8 +98,8 @@ test("discovery-backed scans stay active until discovery completes and queued fi
   await service.addCandidates(scan.id, ["C:\\samples\\candidate.exe"]);
   await service.finishDiscovery(scan.id);
   await completed;
-  assert.equal(repository.scan?.status, "completed");
-  assert.equal(repository.scan?.filesCompleted, 1);
+  assert.equal(repository.lastCompletedScan?.status, "completed");
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 1);
 });
 
 test("a replacement scan starts after a cancelled worker releases the processing lock", async () => {
@@ -116,9 +118,9 @@ test("a replacement scan starts after a cancelled worker releases the processing
   releaseFirstAnalysis?.();
   await replacementComplete;
 
-  assert.equal(repository.scan?.status, "completed");
-  assert.equal(repository.scan?.currentFile, "Local analysis complete");
-  assert.equal(repository.scan?.filesCompleted, 1);
+  assert.equal(repository.lastCompletedScan?.status, "completed");
+  assert.equal(repository.lastCompletedScan?.currentFile, "Local analysis complete");
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 1);
 });
 
 test("inventory profiles do not invoke the forensic engine", async () => {
@@ -130,7 +132,7 @@ test("inventory profiles do not invoke the forensic engine", async () => {
     void service.start("full", "Windows system locations", ["C:\\samples\\photo.jpg"], 1);
   });
   assert.equal(analyzed, false);
-  assert.equal(repository.scan?.status, "completed");
+  assert.equal(repository.lastCompletedScan?.status, "completed");
 });
 
 test("priority queue schedules high-risk candidates before lower-risk files", async () => {
@@ -145,7 +147,7 @@ test("priority queue schedules high-risk candidates before lower-risk files", as
     void service.start("full", "Windows system locations", ["C:\\samples\\photo.jpg", "C:\\samples\\download.exe"], 1);
   });
   assert.deepEqual(analyzed, ["C:\\samples\\download.exe", "C:\\samples\\photo.jpg"]);
-  assert.equal(repository.scan?.priorityRemaining?.critical ?? 0, 0);
+  assert.equal(repository.lastCompletedScan?.priorityRemaining?.critical ?? 0, 0);
 });
 
 test("an unchanged candidate reuses the scheduler cache on a later scan", async () => {
@@ -156,7 +158,7 @@ test("an unchanged candidate reuses the scheduler cache on a later scan", async 
   await new Promise<void>((resolve) => { const service = new ScanService(repository as unknown as BackgroundService, async () => { analyzed += 1; }, (event) => { if (event === "scanCompleted") resolve(); }, classify); void service.start("full", "Windows system locations", ["C:\\samples\\stable.exe"], 1); });
   await new Promise<void>((resolve) => { const service = new ScanService(repository as unknown as BackgroundService, async () => { analyzed += 1; }, (event) => { if (event === "scanCompleted") resolve(); }, classify); void service.start("full", "Windows system locations", ["C:\\samples\\stable.exe"], 1); });
   assert.equal(analyzed, 1);
-  assert.equal(repository.scan?.cacheHits, 1);
+  assert.equal(repository.lastCompletedScan?.cacheHits, 1);
 });
 
 test("a recovered scan processes every queued candidate without a global time limit", async () => {
@@ -168,8 +170,8 @@ test("a recovered scan processes every queued candidate without a global time li
     void service.recover();
   });
   assert.deepEqual(new Set(analyzed), new Set(["C:\\one.exe", "C:\\two.exe"]));
-  assert.equal(repository.scan?.filesCompleted, 2);
-  assert.equal(repository.scan?.currentStage, "Complete");
+  assert.equal(repository.lastCompletedScan?.filesCompleted, 2);
+  assert.equal(repository.lastCompletedScan?.currentStage, "Complete");
 });
 
 test("cancelling and waiting drains in-flight analysis before local data can reset", async () => {
@@ -249,7 +251,7 @@ test("pause waits for active work, preserves the queue, and resume drains it onc
   assert.equal(starts, 1);
   await service.resume();
   await completedEvent;
-  assert.equal(repository.scan?.status, "completed");
+  assert.equal(repository.lastCompletedScan?.status, "completed");
   assert.equal(starts, 2);
 });
 

@@ -163,14 +163,25 @@ test("a removable-media scan retains its source through persistence", async () =
   }
 });
 
-test("completed scan summaries survive restart and remain available during a replacement scan", async () => {
+test("completed scans clear active state across restart and remain available during a replacement scan", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-completed-scan-"));
   const path = join(directory, "background-settings.json");
   const completed = { id: "completed-scan", mode: "full" as const, target: "All accessible PC files", startedAt: "2026-08-01T10:00:00.000Z", updatedAt: "2026-08-01T10:18:42.000Z", completedAt: "2026-08-01T10:18:42.000Z", elapsedMs: 1_122_000, currentFile: "Local analysis complete", filesCompleted: 842_531, filesRemaining: 0, totalFiles: 842_531, progress: 100, currentStage: "Complete", status: "completed" as const, investigationCount: 3, pausedDurationMs: 0, forensicCount: 50, inventoryCount: 842_481, errorCount: 2, cacheSkipped: 20, pendingFiles: [] };
   try {
     const service = new BackgroundService(path, async () => undefined, () => undefined);
     await service.initialize();
+    await service.recordAnalysis({ analysis: { filePath: "C:\\samples\\completed.exe", analyzedAt: "2026-08-01T10:18:42.000Z", hashes: { sha256: "f".repeat(64) }, finalRiskScore: 72, recommendation: "AI_ANALYSIS", metadata: {} } }, "full");
     await service.saveScan(completed);
+    await service.completeScan(completed.id);
+    const completedSnapshot = service.snapshot();
+    assert.equal(completedSnapshot.activeScan, undefined);
+    assert.equal(completedSnapshot.lastCompletedScan?.id, "completed-scan");
+    assert.equal(completedSnapshot.lastCompletedScan?.completedAt, "2026-08-01T10:18:42.000Z");
+    assert.equal(completedSnapshot.history.some((record) => record.fileHash === "f".repeat(64)), true);
+    const restarted = new BackgroundService(path, async () => undefined, () => undefined);
+    const restartedSnapshot = await restarted.initialize();
+    assert.equal(restartedSnapshot.activeScan, undefined);
+    assert.equal(restartedSnapshot.lastCompletedScan?.id, "completed-scan");
     await service.saveScan({ ...completed, id: "replacement-scan", startedAt: "2026-08-01T10:20:00.000Z", updatedAt: "2026-08-01T10:20:00.000Z", completedAt: undefined, elapsedMs: undefined, currentFile: "Preparing local analysis", filesCompleted: 0, filesRemaining: 0, totalFiles: 0, progress: 0, currentStage: "Discovering files", status: "running", investigationCount: 0 });
     const current = service.snapshot();
     assert.equal(current.activeScan?.id, "replacement-scan");

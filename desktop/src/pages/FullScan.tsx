@@ -38,23 +38,23 @@ export default function FullScan() {
   return <motion.div {...pageMotion} className="page-stack">
     <div className="page-title split-title">
       <div><p className="eyebrow">SYSTEM-WIDE REVIEW</p><h2>Full system scan</h2><p>{performanceDescription(performanceMode)}</p></div>
-      {!scan.active && <Button className="primary" onClick={() => void fullScan()}><Play size={17} />{isCompleted ? "Scan again" : "Scan entire computer"}</Button>}
+      {!scan.active && <Button className="primary" onClick={() => void fullScan()}><Play size={17} />Scan entire computer</Button>}
     </div>
     <Panel className="full-scan-panel">
       <Radar progress={progress} active={scan.active && !isPaused && !isPausing && !isCancelling} />
       <div className="scan-center">
         <div className="scan-state"><span className={scan.active && !isPaused && !isCancelling ? "pulse-dot" : "status-dot"} />{scanState}</div>
         <h3>{hasSummary ? scan.currentPath || "Preparing local analysis" : "System locations are ready for review"}</h3>
-        <p>{scan.stage ?? (scan.active ? "Analysis continues independently from this window." : isCompleted ? "Final scan results are retained until you start another scan." : performanceDescription(performanceMode))}</p>
+        <p>{scan.stage ?? (scan.active ? "Analysis continues independently from this window." : performanceDescription(performanceMode))}</p>
         <div className="progress-track"><motion.span animate={{ scaleX: progress / 100 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} /></div>
         <div className="scan-stats"><span><strong>{hasSummary ? scan.completed.toLocaleString() : "0"}</strong> files scanned</span><span><strong>{hasSummary ? scan.investigationCount : 0}</strong> need investigation</span><span><strong>{remaining.toLocaleString()}</strong> remaining</span></div>
         <div className="scan-controls">
-          {scan.active ? <>{!isCancelling && <Button disabled={isPausing || isResuming} onClick={() => void (isPaused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{isPaused ? <Play size={16} /> : <Pause size={16} />}{isPaused ? "Resume" : isPausing ? "Pausing..." : isResuming ? "Resuming..." : "Pause"}</Button>}<Button className="danger" disabled={isCancelling} onClick={() => void window.viai?.scans.cancel()}><Square size={15} />{isCancelling ? "Cancelling..." : "Cancel scan"}</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />{isCompleted ? "Scan again" : "Start full scan"}</Button>}
+          {scan.active ? <>{!isCancelling && <Button disabled={isPausing || isResuming} onClick={() => void (isPaused ? window.viai?.scans.resume() : window.viai?.scans.pause())}>{isPaused ? <Play size={16} /> : <Pause size={16} />}{isPaused ? "Resume" : isPausing ? "Pausing..." : isResuming ? "Resuming..." : "Pause"}</Button>}<Button className="danger" disabled={isCancelling} onClick={() => void window.viai?.scans.cancel()}><Square size={15} />{isCancelling ? "Cancelling..." : "Cancel scan"}</Button></> : <Button className="primary" onClick={() => void fullScan()}><Play size={16} />Start full scan</Button>}
         </div>
       </div>
     </Panel>
     <section className="scan-meta-grid">
-      <Meta icon={Clock3} label="Elapsed time" value={scan.startedAt && (scan.active || isCompleted) ? formatDuration(elapsed) : "-"} />
+      <Meta icon={Clock3} label="Elapsed time" value={formatDuration(elapsed)} />
       <Meta icon={TimerReset} label="Estimated remaining" value={isCompleted ? "Completed" : isCancelled ? "Cancelled" : isFailed ? "Unavailable" : scan.active && scan.estimatedRemainingMs !== undefined ? formatDuration(scan.estimatedRemainingMs) : "-"} />
       <Meta icon={Cpu} label="Process CPU" value={scan.active ? `${scan.cpuPercent ?? 0}%` : "-"} />
       <Meta icon={Database} label="Process memory" value={scan.active ? formatBytes(scan.memoryBytes ?? 0) : "-"} />

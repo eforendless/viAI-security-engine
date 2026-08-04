@@ -1,6 +1,6 @@
 {
   "name": "viai-local-security-engine",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "private": true,
   "description": "Privacy-first local evidence collection and investigation triage engine.",
   "type": "module",

@@ -1,5 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { isNotificationTarget, type NotificationTarget } from "./windowsNotificationService";
+import type { NotificationTarget } from "./windowsNotificationService";
+
+function isNotificationTarget(value: unknown): value is NotificationTarget {
+  if (!value || typeof value !== "object") return false;
+  const target = value as { route?: unknown; assessmentId?: unknown; deviceId?: unknown; scanId?: unknown };
+  if (target.route === "history-detail") return validId(target.assessmentId);
+  if (target.route === "history" || target.route === "realtime") return true;
+  if (target.route === "device-security") return target.deviceId === undefined || validId(target.deviceId);
+  if (target.route === "full-scan") return target.scanId === undefined || validId(target.scanId);
+  return false;
+}
+
+function validId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(value);
+}
 
 contextBridge.exposeInMainWorld("viai", {
   application: {

@@ -100,7 +100,8 @@ export const useSecurityStore = create<SecurityState>((set) => ({
     const hydratedCompleted = remoteLastCompletedScan ? scanFromBackground(remoteLastCompletedScan, state.lastCompletedScan ?? state.scan, number) : incomingCompleted ?? state.lastCompletedScan;
     const archivedScanId = hydratedCompleted?.id;
     const preserveDifferentActiveScan = Boolean(state.scan.active && state.scan.id && !incomingScan && remoteLastCompletedScan && state.scan.id !== archivedScanId);
-    const resetToIdle = !preserveDifferentActiveScan && (incomingScan?.status === "completed" || incomingScan?.id === archivedScanId || (!incomingScan && (Boolean(remoteLastCompletedScan) || state.scan.status === "completed")));
+    const terminalLocalScan = state.scan.status === "completed" || state.scan.status === "cancelled" || state.scan.status === "failed";
+    const resetToIdle = !preserveDifferentActiveScan && (incomingScan?.status === "completed" || incomingScan?.id === archivedScanId || (!incomingScan && (Boolean(remoteLastCompletedScan) || terminalLocalScan)));
     const hydratedScan = resetToIdle ? idleScan() : incomingScan ?? state.scan;
     return {
       darkMode: "desktopDarkMode" in settings ? settings.desktopDarkMode === true : state.darkMode,

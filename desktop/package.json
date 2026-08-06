@@ -1,7 +1,9 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.3.14",
+  "version": "0.3.18",
+  "description": "viAI Security desktop application.",
+  "author": "eforendless",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -15,7 +17,7 @@
     "publish:github": "npm run build && electron-builder --win nsis --x64 --publish always",
     "start": "npm run build && electron .",
     "lint": "eslint .",
-    "test": "npm run build && node scripts/test-assessment-presentation.mjs && node scripts/test-history-layout.mjs && node scripts/test-history-interactions.mjs && node scripts/test-realtime-search.mjs && node scripts/test-dark-theme.mjs && node scripts/test-scan-completion.mjs && node --test dist-electron/*.test.js",
+    "test": "npm run build && node scripts/test-assessment-presentation.mjs && node scripts/test-history-layout.mjs && node scripts/test-history-interactions.mjs && node scripts/test-realtime-search.mjs && node scripts/test-dark-theme.mjs && node scripts/test-scan-completion.mjs && node scripts/test-scan-report-presentation.mjs && node --test dist-electron/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -55,7 +57,8 @@
   },
   "build": {
     "appId": "com.eforendless.viai",
-    "productName": "viAI Security Engine",
+    "productName": "viAI Security",
+    "executableName": "viAI Security",
     "afterAllArtifactBuild": "./scripts/generate-update-manifest.cjs",
     "directories": {
       "output": "release"
@@ -90,7 +93,7 @@
     ],
     "win": {
       "icon": "public/icon.ico",
-      "artifactName": "viAI.Security.Engine.Setup.${version}.${ext}",
+      "artifactName": "viAI.Security.Setup.${version}.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -107,6 +110,10 @@
         "repo": "viAI-security-engine",
         "releaseType": "release"
       }
-    ]
+    ],
+    "nsis": {
+      "shortcutName": "viAI Security",
+      "uninstallDisplayName": "viAI Security"
+    }
   }
 }

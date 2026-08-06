@@ -1,7 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { arch, cpus, freemem, hostname, networkInterfaces, release, totalmem, type, uptime, userInfo } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -21,8 +19,8 @@ let cachedWindowsFacts: { value: WindowsFacts; expiresAt: number } | undefined;
 let windowsFactsInFlight: Promise<WindowsFacts> | undefined;
 const windowsFactsCacheMs = 5 * 60_000;
 
-export async function collectSystemOverview(dataDirectory: string): Promise<SystemOverview> {
-  const [deviceId, facts] = await Promise.all([readDeviceId(dataDirectory), windowsFacts()]);
+export async function collectSystemOverview(deviceId: string): Promise<SystemOverview> {
+  const facts = await windowsFacts();
   const memoryTotal = totalmem();
   const memoryAvailable = freemem();
   const storage = facts.storage?.map((drive) => ({ drive: drive.drive || "Not Available", capacity: finite(drive.capacity), free: finite(drive.free), filesystem: drive.filesystem || "Not Available" })) ?? [];
@@ -38,15 +36,6 @@ export async function collectSystemOverview(dataDirectory: string): Promise<Syst
     storage,
     health: { cpuUsagePercent: cpuUsage(), memoryUsagePercent, diskUsagePercent: totalStorage ? percent(usedStorage, totalStorage) : undefined },
   };
-}
-
-async function readDeviceId(directory: string): Promise<string> {
-  const path = join(directory, "device-id.txt");
-  try { const id = (await readFile(path, "utf8")).trim(); if (id) return id; } catch { /* Create the locally scoped identifier below. */ }
-  const id = crypto.randomUUID();
-  await mkdir(directory, { recursive: true });
-  await writeFile(path, id, "utf8");
-  return id;
 }
 
 async function windowsFacts(): Promise<WindowsFacts> {

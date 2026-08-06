@@ -14,12 +14,18 @@ import { StartupManager, type StartupProgress } from "./startup";
 import { collectSystemOverview } from "./systemOverview";
 import { UpdateService } from "./updater";
 import { isNotificationTarget, type NativeNotificationPayload, type NotificationTarget, WindowsNotificationService } from "./windowsNotificationService";
+import { DesktopPersistence, type ScanReport } from "./persistence/repositories";
+import { importLegacyJson } from "./persistence/legacyJsonImporter";
+import { APPLICATION_NAME, configureApplicationIdentity } from "./applicationIdentity";
+import { legacyUserDataPath, migrateLegacyUserData } from "./userDataMigration";
 
 const execFileAsync = promisify(execFile);
+configureApplicationIdentity(app);
 const isPrimaryInstance = app.requestSingleInstanceLock();
 let engineProcess: ReturnType<typeof execFile> | undefined;
 let deviceSecurity: DeviceSecurityService | undefined;
 let backgroundService: BackgroundService | undefined;
+let persistence: DesktopPersistence | undefined;
 let scanService: ScanService | undefined;
 let mainWindow: BrowserWindow | undefined;
 let splashWindow: BrowserWindow | undefined;
@@ -37,6 +43,9 @@ let updateService: UpdateService | undefined;
 let engineEventsSince = new Date().toISOString();
 let rendererReady = false;
 let pendingNotificationTarget: NotificationTarget | undefined;
+const scanReportUpdateTimers = new Map<string, NodeJS.Timeout>();
+const pendingScanReportUpdates = new Map<string, Omit<PersistedScanState, "pendingFiles">>();
+const scanReportUpdateIntervalMs = 400;
 const launchedInBackground = process.argv.includes("--viai-background");
 const launchedMinimized = process.argv.includes("--viai-minimized");
 
@@ -63,7 +72,32 @@ function publishBackground(snapshot: BackgroundSnapshot): void {
 
 function publishScan(event: ScanEventName, scan: Omit<PersistedScanState, "pendingFiles">): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send("scan:event", { event, scan });
+  if (scan.mode === "full") queueScanReportUpdate(event, scan);
   if (event === "scanCompleted") notifyScanCompleted(scan);
+}
+
+function queueScanReportUpdate(event: ScanEventName, scan: Omit<PersistedScanState, "pendingFiles">): void {
+  const immediate = event !== "scanProgress";
+  pendingScanReportUpdates.set(scan.id, scan);
+  const timer = scanReportUpdateTimers.get(scan.id);
+  if (immediate && timer) { clearTimeout(timer); scanReportUpdateTimers.delete(scan.id); }
+  if (immediate) { void publishQueuedScanReport(scan.id, event); return; }
+  if (timer) return;
+  const scheduled = setTimeout(() => { scanReportUpdateTimers.delete(scan.id); void publishQueuedScanReport(scan.id, "scanProgress"); }, scanReportUpdateIntervalMs);
+  scheduled.unref();
+  scanReportUpdateTimers.set(scan.id, scheduled);
+}
+
+async function publishQueuedScanReport(scanId: string, event: ScanEventName): Promise<void> {
+  const scan = pendingScanReportUpdates.get(scanId);
+  if (!scan) return;
+  pendingScanReportUpdates.delete(scanId);
+  const terminal = event === "scanCompleted" || event === "scanCancelled" || event === "scanFailed";
+  const report = terminal || event === "scanPaused"
+    ? await backgroundService?.scanReport(scanId)
+    : await backgroundService?.runtimeScanReport(scan);
+  if (!report) return;
+  for (const window of BrowserWindow.getAllWindows()) window.webContents.send("scan-report:updated", { event, report });
 }
 
 function enginePaths(): { entry: string; workingDirectory: string } {
@@ -95,7 +129,7 @@ async function startEngine(): Promise<void> {
   if (quitting || disposing) return;
   const child = execFile(process.execPath, [entry], {
     cwd: workingDirectory,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", VIAI_DEVICE_SECURITY: "1" },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", VIAI_DEVICE_SECURITY: "1", VIAI_DB_PATH: persistence?.database.filePath ?? "" },
     windowsHide: true,
   });
   engineProcess = child;
@@ -135,7 +169,7 @@ function createWindow(show = true): BrowserWindow {
     height: 920,
     minWidth: 1120,
     minHeight: 720,
-    title: "viAI security",
+    title: APPLICATION_NAME,
     show: false,
     backgroundColor: "#101820",
     frame: false,
@@ -184,7 +218,8 @@ async function createSplashWindow(): Promise<void> {
     resizable: false,
     minimizable: false,
     maximizable: false,
-    skipTaskbar: false,
+    skipTaskbar: true,
+    title: APPLICATION_NAME,
     backgroundColor: "#101820",
     webPreferences: { preload: join(__dirname, "splashPreload.js"), contextIsolation: true, nodeIntegration: false },
   });
@@ -234,10 +269,10 @@ function configureStartup(): StartupManager {
   manager.progress.subscribe(publishStartupProgress);
   manager.register([
     { id: "configuration", name: "Loading application configuration", weight: 5, execute: async () => { if (!process.env.VITE_DEV_SERVER_URL && !existsSync(enginePaths().entry)) throw new Error("The packaged local engine is missing."); } },
-    { id: "engine", name: "Initializing analysis, rules, and trust engines", weight: 25, dependencies: ["configuration"], execute: async () => { await startEngine(); await waitForEngineReady(); } },
-    { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["engine"], execute: async () => { backgroundService = new BackgroundService(join(app.getPath("userData"), "background-settings.json"), applyEngineMonitoring, publishBackground, engineVersion()); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
-    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType, _classification, signal, origin) => analyzeEngineFile(filePath, scanType, engineAnalysisTimeoutMs, signal, origin), publishScan); await scanService.recover(); } },
-    { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["recovery"], execute: async () => { deviceSecurity = new DeviceSecurityService(join(app.getPath("userData"), "device-security.json"), publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; const enabled = settings?.backgroundProtection === true; return { monitorUsbStorage: enabled && settings?.monitorUsbStorage === true, monitorUsbInsertion: enabled && settings?.monitorUsbInsertion === true, automaticallyScanUsb: enabled && settings?.automaticallyScanUsb === true }; }, requestRemovableStorageScan); await deviceSecurity.start(); } },
+    { id: "persistence", name: "Loading user settings and local persistence", weight: 20, dependencies: ["configuration"], execute: async () => { const userDataPath = app.getPath("userData"); await migrateLegacyUserData({ legacyUserDataPath: legacyUserDataPath(app.getPath("appData")), userDataPath }); persistence = new DesktopPersistence(join(userDataPath, "viai.db")); await importLegacyJson(persistence, { userDataPath, engineDataPath: join(enginePaths().workingDirectory, "database") }); backgroundService = new BackgroundService(persistence, applyEngineMonitoring, publishBackground, engineVersion()); startupSnapshot = await backgroundService.initialize(); applyStartup(startupSnapshot.settings); } },
+    { id: "engine", name: "Initializing analysis, rules, and trust engines", weight: 25, dependencies: ["persistence"], execute: async () => { await startEngine(); await waitForEngineReady(); } },
+    { id: "recovery", name: "Checking persisted scan recovery", weight: 10, dependencies: ["persistence"], execute: async () => { if (!backgroundService) throw new Error("Background persistence is unavailable."); scanService = new ScanService(backgroundService, (filePath, scanType, _classification, signal, origin, scanId) => analyzeEngineFile(filePath, scanType, engineAnalysisTimeoutMs, signal, origin, scanId), publishScan, undefined, resumePersistedDiscovery); await scanService.recover(); } },
+    { id: "devices", name: "Loading device cache and USB monitoring", weight: 15, dependencies: ["recovery"], execute: async () => { if (!persistence) throw new Error("Local persistence is unavailable."); deviceSecurity = new DeviceSecurityService(persistence, publishDeviceSecurity, () => { const settings = backgroundService?.snapshot().settings; const enabled = settings?.backgroundProtection === true; return { monitorUsbStorage: enabled && settings?.monitorUsbStorage === true, monitorUsbInsertion: enabled && settings?.monitorUsbInsertion === true, automaticallyScanUsb: enabled && settings?.automaticallyScanUsb === true }; }, requestRemovableStorageScan); await deviceSecurity.start(); } },
     { id: "notifications", name: "Preparing local notifications", weight: 5, dependencies: ["persistence"], execute: async () => { Notification.isSupported(); } },
     { id: "tray", name: "Creating secure system tray service", weight: 5, dependencies: ["persistence"], execute: async () => { createTray(); } },
     { id: "dashboard", name: "Preparing secure dashboard", weight: 15, dependencies: ["persistence"], execute: async () => { await prepareDashboard(); announceStartupReady(); } },
@@ -301,7 +336,7 @@ ipcMain.handle("startup:exit", () => { quitting = true; app.quit(); });
 ipcMain.handle("startup:complete-transition", () => completeStartupTransition());
 ipcMain.handle("application:version", () => app.getVersion());
 ipcMain.handle("engine:version", () => engineVersion());
-ipcMain.handle("system:overview", () => collectSystemOverview(app.getPath("userData")));
+ipcMain.handle("system:overview", () => collectSystemOverview(persistence?.getOrCreateSystemDeviceId() ?? "Not Available"));
 ipcMain.handle("updates:snapshot", () => updateService?.current());
 ipcMain.handle("updates:check", () => updateService?.check());
 ipcMain.handle("updates:download", () => updateService?.download());
@@ -336,6 +371,43 @@ ipcMain.handle("background:snapshot", () => backgroundService?.loadHistory());
 ipcMain.handle("background:history-record", async (_event, id: string) => {
   if (typeof id !== "string" || id.length > 128) throw new Error("Invalid history record request");
   return backgroundService?.historyRecord(id);
+});
+ipcMain.handle("background:history-page", async (_event, query: { page?: unknown; pageSize?: unknown; search?: unknown; category?: unknown; scanId?: unknown }) => {
+  if (!backgroundService || !query || typeof query !== "object") throw new Error("Invalid history query");
+  const page = typeof query.page === "number" && Number.isInteger(query.page) && query.page >= 0 ? query.page : 0;
+  const pageSize = typeof query.pageSize === "number" && Number.isInteger(query.pageSize) && query.pageSize > 0 && query.pageSize <= 500 ? query.pageSize : 100;
+  const search = typeof query.search === "string" && query.search.length <= 512 ? query.search : undefined;
+  const category = query.category === "needs-investigation" || query.category === "monitoring" || query.category === "no-action" || query.category === "all" ? query.category : "all";
+  const scanId = typeof query.scanId === "string" && query.scanId.length > 0 && query.scanId.length <= 128 ? query.scanId : undefined;
+  return backgroundService.historyPage({ page, pageSize, search, category, scanId });
+});
+ipcMain.handle("background:scan-report-page", async (_event, query: { page?: unknown; pageSize?: unknown; search?: unknown; status?: unknown; performanceMode?: unknown }) => {
+  if (!backgroundService || !query || typeof query !== "object") throw new Error("Invalid scan report query");
+  const page = typeof query.page === "number" && Number.isInteger(query.page) && query.page >= 0 ? query.page : 0;
+  const pageSize = typeof query.pageSize === "number" && Number.isInteger(query.pageSize) && query.pageSize > 0 && query.pageSize <= 200 ? query.pageSize : 50;
+  const search = typeof query.search === "string" && query.search.length <= 512 ? query.search : undefined;
+  const status = query.status === "running" || query.status === "paused" || query.status === "completed" || query.status === "cancelled" || query.status === "failed" ? query.status : "all";
+  const performanceMode = query.performanceMode === "light" || query.performanceMode === "balanced" || query.performanceMode === "deep" ? query.performanceMode : "all";
+  return backgroundService.scanReportPage({ page, pageSize, search, status, performanceMode });
+});
+ipcMain.handle("background:scan-report", async (_event, scanId: unknown) => {
+  if (!backgroundService || typeof scanId !== "string" || !scanId.length || scanId.length > 128) throw new Error("Invalid scan report identifier");
+  return backgroundService.scanReport(scanId);
+});
+ipcMain.handle("background:dashboard-summary", async () => {
+  if (!backgroundService) throw new Error("Background service is not ready");
+  return backgroundService.dashboardSummary();
+});
+ipcMain.handle("background:assessment-trend", async (_event, period: unknown) => {
+  if (!backgroundService || (period !== "24h" && period !== "7d" && period !== "30d")) throw new Error("Invalid dashboard trend period");
+  return backgroundService.assessmentTrend(period);
+});
+ipcMain.handle("background:recent-assessments", async (_event, query: { limit?: unknown; search?: unknown; category?: unknown }) => {
+  if (!backgroundService || !query || typeof query !== "object") throw new Error("Invalid dashboard recent query");
+  const limit = typeof query.limit === "number" && Number.isInteger(query.limit) && query.limit > 0 && query.limit <= 50 ? query.limit : 8;
+  const search = typeof query.search === "string" && query.search.length <= 512 ? query.search : undefined;
+  const category = query.category === "needs-investigation" || query.category === "monitoring" || query.category === "no-action" || query.category === "legacy" || query.category === "all" ? query.category : "all";
+  return backgroundService.recentAssessments({ limit, search, category });
 });
 async function applyBackgroundSettings(snapshot: Awaited<ReturnType<BackgroundService["snapshot"]>> | undefined): Promise<void> {
   if (!snapshot) return;
@@ -374,6 +446,12 @@ ipcMain.handle("background:remove-history", async (_event, ids: unknown) => {
   if (!backgroundService || !Array.isArray(ids) || ids.length > 500 || !ids.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128)) throw new Error("Invalid history removal request");
   return backgroundService.removeHistory(ids);
 });
+ipcMain.handle("background:remove-history-matching", async (_event, query: { search?: unknown; category?: unknown }, excludedIds: unknown) => {
+  if (!backgroundService || !query || typeof query !== "object" || !Array.isArray(excludedIds) || excludedIds.length > 500 || !excludedIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128)) throw new Error("Invalid history removal request");
+  const search = typeof query.search === "string" && query.search.length <= 512 ? query.search : undefined;
+  const category = query.category === "needs-investigation" || query.category === "monitoring" || query.category === "no-action" || query.category === "all" ? query.category : "all";
+  return backgroundService.removeHistoryMatching({ search, category }, excludedIds);
+});
 ipcMain.handle("application:clear-local-data", async () => {
   await scanService?.cancelAndWait();
   await backgroundService?.clearAllData();
@@ -394,7 +472,7 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const folderTarget = target;
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
     const parallel = scanConcurrency(performanceMode);
-    const scan = await scanService.start(mode, target, [], parallel, false);
+    const scan = await scanService.start(mode, target, [], parallel, false, undefined, performanceMode);
     void scanService.discover(scan.id, (controller, onBatch) => streamCandidates([folderTarget], false, controller, onBatch));
     return scan;
   } else {
@@ -402,7 +480,7 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
     const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
     target = performanceMode === "deep" ? "All accessible PC files" : performanceMode === "light" ? "Important Windows locations" : "Common Windows locations";
     const parallel = scanConcurrency(performanceMode);
-    const scan = await scanService.start(mode, target, [], parallel, false);
+    const scan = await scanService.start(mode, target, [], parallel, false, undefined, performanceMode);
     void scanService.discover(scan.id, async (controller, onBatch) => {
       const roots = fullScanRoots(performanceMode, home, await fixedDrives(), await removableDrives()).filter(existsSync);
       await streamCandidates(roots, performanceMode === "deep", controller, onBatch);
@@ -411,10 +489,14 @@ ipcMain.handle("scan:start", async (_event, mode: "quick" | "full" | "folder", t
   }
   const performanceMode = settings.performanceMode === "light" || settings.performanceMode === "deep" ? settings.performanceMode : "balanced";
   const parallel = scanConcurrency(performanceMode);
-  return scanService.start(mode, target ?? "", files, parallel);
+  return scanService.start(mode, target ?? "", files, parallel, true, undefined, performanceMode);
 });
 ipcMain.handle("scan:pause", () => scanService?.pause());
 ipcMain.handle("scan:resume", () => scanService?.resume());
+ipcMain.handle("scan:continue", async (_event, scanId: unknown) => {
+  if (typeof scanId !== "string" || !scanId.length || scanService?.controllerFor(scanId)?.state !== "paused") throw new Error("This paused scan is no longer available to continue");
+  await scanService.resume();
+});
 ipcMain.handle("scan:cancel", () => scanService?.cancel());
 
 ipcMain.handle("device-security:snapshot", () => deviceSecurity?.snapshot() ?? { devices: [], history: [], policies: {}, monitoringActive: false, monitoringState: "disabled" });
@@ -452,7 +534,7 @@ const engineAnalysisConcurrency = 2;
 
 ipcMain.handle("engine:analyze", async (_event, filePath: string) => analyzeEngineFile(filePath));
 
-async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs, signal?: AbortSignal, origin?: ScanOrigin): Promise<Record<string, unknown>> {
+async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | "folder" | "single-file" | "realtime" = "single-file", timeoutMs = engineAnalysisTimeoutMs, signal?: AbortSignal, origin?: ScanOrigin, scanId?: string): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
   try {
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs)))]): AbortSignal.timeout(Math.max(1, Math.min(engineAnalysisTimeoutMs, timeoutMs)));
@@ -472,7 +554,7 @@ async function analyzeEngineFile(filePath: string, scanType: "quick" | "full" | 
     }
     if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `Engine analysis failed (${response.status})`);
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
-    const assessmentId = await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder", origin);
+    const assessmentId = await backgroundService?.recordAnalysis(body, scanType, Date.now() - startedAt, scanType === "quick" || scanType === "full" || scanType === "folder", origin, scanId);
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
     notifyAnalysis(body, assessmentId);
     return body;
@@ -551,6 +633,16 @@ function scanConcurrency(mode: "light" | "balanced" | "deep"): number {
   return mode === "light" ? 1 : engineAnalysisConcurrency;
 }
 
+async function resumePersistedDiscovery(scan: PersistedScanState, controller: ScanController, onBatch: (files: string[]) => Promise<void>): Promise<void> {
+  if (scan.mode === "folder") return streamCandidates([scan.target], false, controller, onBatch);
+  if (scan.mode === "full") {
+    const mode = scan.performanceMode === "light" || scan.performanceMode === "deep" ? scan.performanceMode : "balanced";
+    const roots = fullScanRoots(mode, homedir(), await fixedDrives(), await removableDrives()).filter(existsSync);
+    return streamCandidates(roots, mode === "deep", controller, onBatch);
+  }
+  await onBatch([]);
+}
+
 async function requestRemovableStorageScan(device: DeviceRecord, trigger: DeviceStorageScanTrigger): Promise<void> {
   if (!scanService || !backgroundService || !device.mountPoint) throw new Error("The scan service is not ready");
   const root = device.mountPoint.endsWith("\\") ? device.mountPoint : `${device.mountPoint}\\`;
@@ -610,10 +702,10 @@ function createTray(): void {
   tray = undefined;
   const iconPath = join(app.getAppPath(), "public", "viai-logodone.png");
   tray = new Tray(existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty());
-  tray.setToolTip("viAI Local Security Engine");
+  tray.setToolTip(APPLICATION_NAME);
   tray.on("double-click", () => showMainWindow());
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open viAI", click: () => createWindow() },
+    { label: "Open viAI Security", click: () => createWindow() },
     { label: "Quick Scan", click: () => { createWindow(); mainWindow?.webContents.send("background:command", "quick-scan"); } },
     { type: "separator" },
     { label: "Pause Monitoring", click: () => void backgroundService?.update({ backgroundProtection: false }) },
@@ -622,7 +714,7 @@ function createTray(): void {
     { label: "Open History", click: () => { createWindow(); mainWindow?.webContents.send("background:command", "history"); } },
     { label: "Settings", click: () => { createWindow(); mainWindow?.webContents.send("background:command", "settings"); } },
     { type: "separator" },
-    { label: "Exit", click: () => { quitting = true; app.quit(); } },
+    { label: "Exit viAI Security", click: () => { quitting = true; app.quit(); } },
   ]));
 }
 
@@ -759,6 +851,8 @@ function disposeMainResources(): void {
   splashWindow = undefined;
   if (engineProcess && !engineProcess.killed) engineProcess.kill();
   engineProcess = undefined;
+  persistence?.database.close();
+  persistence = undefined;
 }
 }
 

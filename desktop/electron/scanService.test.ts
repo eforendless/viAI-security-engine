@@ -192,6 +192,21 @@ test("a recovered scan processes every queued candidate without a global time li
   assert.equal(repository.lastCompletedScan?.currentStage, "Complete");
 });
 
+test("a recovered paused scan keeps its scan ID and does not repeat completed work", async () => {
+  const repository = new MemoryScanRepository();
+  repository.scan = { id: "paused-recovery", mode: "full", performanceMode: "balanced", target: "Common Windows locations", startedAt: new Date(Date.now() - 2_000).toISOString(), updatedAt: new Date().toISOString(), currentFile: "Paused", filesCompleted: 1, filesRemaining: 1, totalFiles: 2, progress: 50, currentStage: "Paused", status: "paused", investigationCount: 0, pausedDurationMs: 0, discoveryComplete: true, pendingFiles: ["C:\\two.exe"], completedFiles: ["C:\\one.exe"] };
+  const analyzed: string[] = [];
+  let complete!: () => void;
+  const completed = new Promise<void>((resolve) => { complete = resolve; });
+  const service = new ScanService(repository as unknown as BackgroundService, async (filePath) => { analyzed.push(filePath); }, (event) => { if (event === "scanCompleted") complete(); }, async () => forensic);
+  await service.recover();
+  assert.equal(service.controllerFor("paused-recovery")?.state, "paused");
+  await service.resume();
+  await completed;
+  assert.deepEqual(analyzed, ["C:\\two.exe"]);
+  assert.equal(repository.lastCompletedScan?.id, "paused-recovery");
+});
+
 test("cancelling and waiting drains in-flight analysis before local data can reset", async () => {
   const repository = new MemoryScanRepository();
   let releaseAnalysis: (() => void) | undefined;

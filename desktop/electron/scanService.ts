@@ -22,9 +22,10 @@ export class ScanService {
 
   constructor(
     private readonly background: BackgroundService,
-    private readonly analyze: (filePath: string, scanType: PersistedScanState["mode"], classification: FileClassification, signal?: AbortSignal, origin?: ScanOrigin) => Promise<unknown>,
+    private readonly analyze: (filePath: string, scanType: PersistedScanState["mode"], classification: FileClassification, signal?: AbortSignal, origin?: ScanOrigin, scanId?: string) => Promise<unknown>,
     private readonly publish: (event: ScanEventName, scan: ScanUpdate) => void,
     private readonly classify: (filePath: string, cached?: import("./fileClassification").ScanCacheEntry) => Promise<FileClassification> = classifyDiscoveredFile,
+    private readonly restoreDiscovery?: (scan: PersistedScanState, controller: ScanController, onBatch: (files: string[]) => Promise<void>) => Promise<void>,
   ) {}
 
   controllerFor(scanId: string): ScanController | undefined { return this.controller?.scanId === scanId ? this.controller : undefined; }
@@ -32,6 +33,9 @@ export class ScanService {
   async recover(): Promise<void> {
     const scan = this.background.currentScan();
     if (!scan || terminal(scan.status)) return;
+    this.inFlight.clear(); this.knownFiles.clear(); this.classifications.clear();
+    [...scan.pendingFiles, ...(scan.completedFiles ?? [])].forEach((file) => this.knownFiles.add(file));
+    this.requestedConcurrency = Math.max(1, scan.workersTotal ?? this.requestedConcurrency);
     const recoveredState = scan.status === "pausing" ? "paused" : lifecycle(scan.status);
     this.controller = new ScanController(scan.id, recoveredState);
     if (scan.status === "finalizing") await this.complete(scan.id);
@@ -48,10 +52,11 @@ export class ScanService {
         await this.background.saveScan(scan); this.emit("scanStarted", scan);
       }
       this.startWorkers(scan.id);
+      this.restoreDiscoveryIfNeeded(scan);
     }
   }
 
-  async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number, discoveryComplete = true, origin?: ScanOrigin): Promise<PersistedScanState> {
+  async start(mode: PersistedScanState["mode"], target: string, files: string[], concurrency: number, discoveryComplete = true, origin?: ScanOrigin, performanceMode?: PersistedScanState["performanceMode"]): Promise<PersistedScanState> {
     const current = this.background.currentScan();
     if (current && !terminal(current.status)) throw new Error("A scan is already running");
     const controller = new ScanController(crypto.randomUUID());
@@ -64,7 +69,7 @@ export class ScanService {
     pendingFiles.forEach((file) => this.knownFiles.add(file));
     controller.markRunning();
     const now = new Date().toISOString();
-    const scan: PersistedScanState = { id: controller.scanId, mode, source: origin?.source, deviceId: origin?.id, deviceVolume: origin?.volume, deviceScanTrigger: origin?.trigger, target, startedAt: now, updatedAt: now, currentFile: discoveryComplete ? "Priority queue ready" : "Discovering files", filesCompleted: 0, filesRemaining: pendingFiles.length, totalFiles: pendingFiles.length, progress: 0, currentStage: discoveryComplete ? "Prioritizing" : "Discovering files", status: "running", investigationCount: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: Math.max(1, Math.min(concurrency, 8)), peakQueueLength: pendingFiles.length, priorityRemaining: this.priorityCounts(pendingFiles), discoveryComplete, pendingFiles };
+    const scan: PersistedScanState = { id: controller.scanId, mode, performanceMode, source: origin?.source, deviceId: origin?.id, deviceVolume: origin?.volume, deviceScanTrigger: origin?.trigger, target, startedAt: now, updatedAt: now, currentFile: discoveryComplete ? "Priority queue ready" : "Discovering files", filesCompleted: 0, filesRemaining: pendingFiles.length, totalFiles: pendingFiles.length, progress: 0, currentStage: discoveryComplete ? "Prioritizing" : "Discovering files", status: "running", investigationCount: 0, pausedDurationMs: 0, forensicCount: 0, inventoryCount: 0, errorCount: 0, cacheHits: 0, cacheMisses: 0, cacheSkipped: 0, workersActive: 0, workersTotal: Math.max(1, Math.min(concurrency, 8)), peakQueueLength: pendingFiles.length, priorityRemaining: this.priorityCounts(pendingFiles), discoveryComplete, pendingFiles, completedFiles: [] };
     await this.background.saveScan(scan);
     this.diagnostic(scan.id, `created mode=${mode} workers=${scan.workersTotal} discovery=${discoveryComplete ? "complete" : "pending"}`);
     this.emit("scanStarted", scan);
@@ -156,7 +161,7 @@ export class ScanService {
         active.pausedDurationMs += Math.max(0, Date.now() - Date.parse(active.pausedAt));
         active.pausedAt = undefined;
       }
-      active.status = "resuming"; active.currentStage = "Resuming"; active.updatedAt = new Date().toISOString();
+      active.elapsedMs = undefined; active.status = "resuming"; active.currentStage = "Resuming"; active.updatedAt = new Date().toISOString();
       return true;
     });
     if (!scan) return;
@@ -172,17 +177,19 @@ export class ScanService {
     if (!latest) return;
     this.emit("scanStarted", latest);
     this.startWorkers(latest.id);
+    this.restoreDiscoveryIfNeeded(latest);
   }
 
   async cancel(): Promise<void> {
     const controller = this.controller;
     if (!controller?.cancel()) return;
-    const now = new Date().toISOString();
+    const now = new Date();
+    const timestamp = now.toISOString();
     const scan = await this.mutateScan(controller.scanId, (active) => {
       if (active.status === "finalizing" || terminal(active.status)) return false;
       active.status = "cancelling"; active.currentStage = "Cancelling"; active.currentFile = "Stopping local analysis";
       active.filesPendingAtCancellation = active.pendingFiles.filter((file) => !this.inFlight.has(file)).length; active.pendingFiles = []; active.filesRemaining = 0; active.priorityRemaining = {};
-      active.cancelRequestedAt = now; active.schedulerStoppedAt = now; active.queueClearedAt = now; active.activeWorkersAtCancellation = this.inFlight.size; active.updatedAt = now;
+      active.cancelRequestedAt = timestamp; active.schedulerStoppedAt = timestamp; active.queueClearedAt = timestamp; active.activeWorkersAtCancellation = this.inFlight.size; active.elapsedMs = elapsedMs(active, now.valueOf()); active.updatedAt = timestamp;
       return true;
     });
     if (!scan) return;
@@ -242,7 +249,7 @@ export class ScanService {
           active.currentStage = resolvedClassification.cacheHit ? "Cached inventory" : resolvedClassification.profile === "forensic" ? "Forensic analysis" : resolvedClassification.profile === "standard" ? "Standard analysis" : "Inventory";
           return true;
         }, { persist: false, publish: false });
-        if (scan.mode === "quick" || !resolvedClassification.cacheHit && resolvedClassification.profile !== "inventory") analysis = await this.analyze(file, scan.mode, resolvedClassification, controller.signal, scan.source === "removable-media" && scan.deviceId && scan.deviceVolume && scan.deviceScanTrigger ? { source: scan.source, id: scan.deviceId, volume: scan.deviceVolume, trigger: scan.deviceScanTrigger } : undefined);
+        if (scan.mode === "quick" || !resolvedClassification.cacheHit && resolvedClassification.profile !== "inventory") analysis = await this.analyze(file, scan.mode, resolvedClassification, controller.signal, scan.source === "removable-media" && scan.deviceId && scan.deviceVolume && scan.deviceScanTrigger ? { source: scan.source, id: scan.deviceId, volume: scan.deviceVolume, trigger: scan.deviceScanTrigger } : undefined, scan.id);
       } catch (error) { if (!isAbort(error) && !controller.signal.aborted) failed = true; }
       finally {
         this.inFlight.delete(file);
@@ -253,10 +260,11 @@ export class ScanService {
       const pausing = controller.state === "pausing";
       const latest = await this.mutateScan(scanId, (active) => {
         if (!(active.status === "running" || pausing && active.status === "pausing") || !(controller.state === "running" || pausing)) return false;
-        active.pendingFiles = active.pendingFiles.filter((value) => value !== file); active.filesCompleted = active.totalFiles - active.pendingFiles.length; active.filesRemaining = active.pendingFiles.length;
+        active.pendingFiles = active.pendingFiles.filter((value) => value !== file); active.completedFiles ??= []; if (!active.completedFiles.includes(file)) active.completedFiles.push(file); active.filesCompleted = active.totalFiles - active.pendingFiles.length; active.filesRemaining = active.pendingFiles.length;
         active.progress = active.totalFiles ? Math.min(99, Math.round(active.filesCompleted / active.totalFiles * 99)) : 0; active.workersActive = this.inFlight.size; active.priorityRemaining = this.priorityCounts(active.pendingFiles);
         if (classification?.cacheHit) { active.cacheHits = (active.cacheHits ?? 0) + 1; active.cacheSkipped = (active.cacheSkipped ?? 0) + 1; } else active.cacheMisses = (active.cacheMisses ?? 0) + 1;
-        if (classification?.profile === "forensic") active.forensicCount = (active.forensicCount ?? 0) + 1; else active.inventoryCount = (active.inventoryCount ?? 0) + 1;
+        if (classification?.profile === "forensic") active.forensicCount = (active.forensicCount ?? 0) + 1;
+        else if (classification?.profile === "inventory") active.inventoryCount = (active.inventoryCount ?? 0) + 1;
         if (failed) active.errorCount = (active.errorCount ?? 0) + 1;
         if (investigate(analysis)) active.investigationCount += 1;
         active.currentFile = file; active.updatedAt = new Date().toISOString();
@@ -265,6 +273,7 @@ export class ScanService {
         return true;
       }, { persist: false, publish: false });
       if (!latest) { await this.finishPause(scanId); return; }
+      if (latest.filesRemaining > 0 && latest.filesCompleted % checkpointEvery === 0) await this.background.saveScan(latest, { publish: false });
       if (this.shouldPublish()) this.emit("scanProgress", latest);
       await this.maybeComplete(scanId, "worker-settled");
       if (pausing) { await this.finishPause(scanId); return; }
@@ -276,10 +285,11 @@ export class ScanService {
     if (!controller || this.inFlight.size > 0 || !controller.markPaused()) return;
     const scan = await this.mutateScan(scanId, (active) => {
       if (active.status !== "pausing") return false;
-      active.status = "paused"; active.currentStage = "Paused"; active.pausedAt = new Date().toISOString(); active.workersActive = 0; active.updatedAt = active.pausedAt;
+      const pausedAt = new Date(); active.status = "paused"; active.currentStage = "Paused"; active.elapsedMs = elapsedMs(active, pausedAt.valueOf()); active.pausedAt = pausedAt.toISOString(); active.workersActive = 0; active.updatedAt = active.pausedAt;
       return true;
     });
     if (!scan) return;
+    await this.background.reconcileActiveScanReport?.(scanId);
     this.diagnostic(scanId, "paused after in-flight work settled");
     this.emit("scanPaused", scan);
   }
@@ -290,11 +300,12 @@ export class ScanService {
     controller.transition("cancelled");
     const scan = await this.mutateScan(scanId, (active) => {
       if (active.status !== "cancelling") return false;
-      const now = new Date(); active.status = "cancelled"; active.currentStage = "Cancelled"; active.currentFile = "Scan cancelled"; active.workersActive = 0; active.lastWorkerStoppedAt = now.toISOString(); active.cancelledAt = now.toISOString(); active.cancelCompletedAt = now.toISOString(); active.cancelLatencyMs = active.cancelRequestedAt ? Math.max(0, now.valueOf() - Date.parse(active.cancelRequestedAt)) : undefined; active.updatedAt = now.toISOString();
+      const now = new Date(); active.status = "cancelled"; active.currentStage = "Cancelled"; active.currentFile = "Scan cancelled"; active.workersActive = 0; active.elapsedMs = elapsedMs(active, now.valueOf()); active.lastWorkerStoppedAt = now.toISOString(); active.cancelledAt = now.toISOString(); active.cancelCompletedAt = now.toISOString(); active.cancelLatencyMs = active.cancelRequestedAt ? Math.max(0, now.valueOf() - Date.parse(active.cancelRequestedAt)) : undefined; active.updatedAt = now.toISOString();
       return true;
     });
     if (!scan) return;
     await this.background.flushScanCache?.(); await this.background.flushHistory();
+    await this.background.finalizeScan?.(scanId);
     this.diagnostic(scanId, "cancelled after in-flight work settled");
     this.emit("scanCancelled", scan);
     this.releaseRuntime(scanId);
@@ -350,13 +361,14 @@ export class ScanService {
     if (!controller || terminal(controller.state)) return;
     const scan = await this.mutateScan(scanId, (active) => {
       if (terminal(active.status) || active.status === "finalizing") return false;
-      active.status = "failed"; active.currentStage = "Failed"; active.workersActive = 0; active.updatedAt = new Date().toISOString();
+      const failedAt = new Date(); active.status = "failed"; active.currentStage = "Failed"; active.workersActive = 0; active.elapsedMs = elapsedMs(active, failedAt.valueOf()); active.failureReason = "The local scan service stopped unexpectedly."; active.updatedAt = failedAt.toISOString();
       return true;
     });
     if (!scan) return;
     controller.transition("failed");
     await this.background.flushHistory();
     this.diagnostic(scanId, "failed and stopped");
+    await this.background.finalizeScan?.(scanId);
     this.emit("scanFailed", scan);
     this.releaseRuntime(scanId);
   }
@@ -406,6 +418,11 @@ export class ScanService {
     this.clearCompletionDiagnostic(scanId);
     this.inFlight.clear(); this.knownFiles.clear(); this.classifications.clear();
     this.controller = undefined;
+  }
+  private restoreDiscoveryIfNeeded(scan: PersistedScanState): void {
+    const controller = this.controllerFor(scan.id);
+    if (!controller || scan.discoveryComplete !== false || !this.restoreDiscovery) return;
+    void this.discover(scan.id, (activeController, onBatch) => this.restoreDiscovery!(scan, activeController, onBatch));
   }
   private diagnostic(scanId: string, detail: string): void { console.info(`[Scan ${scanId}] ${detail}`); }
   private emit(event: ScanEventName, scan: PersistedScanState): void { const { pendingFiles: _pendingFiles, ...update } = scan; this.publish(event, update); }

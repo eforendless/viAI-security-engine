@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm as remove } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BackgroundService } from "./backgroundService";
+
+async function rm(path: string, options: { recursive: true; force: true }): Promise<void> { BackgroundService.closePathBackedPersistence(); await remove(path, options); }
 
 test("realtime download settings persist, apply live, and report failed watcher activation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-realtime-settings-"));
@@ -72,14 +74,15 @@ test("background history persists complete scan reports for later detail views",
   }
 });
 
-test("background settings migrate legacy scan modes and retain deep mode", async () => {
+test("background settings normalize legacy performance modes and retain deep mode", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-performance-"));
   const path = join(directory, "background-settings.json");
   try {
-    await writeFile(path, JSON.stringify({ settings: { performanceMode: "high" } }), "utf8");
     const service = new BackgroundService(path, async () => undefined, () => undefined);
-    assert.equal((await service.initialize()).settings.performanceMode, "deep");
+    await service.initialize();
+    assert.equal((await service.update({ performanceMode: "high" })).settings.performanceMode, "deep");
     assert.equal((await service.update({ performanceMode: "light" })).settings.performanceMode, "light");
+    service.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -115,9 +118,10 @@ test("a cancelled scan survives restart with its cancellation diagnostics", asyn
     await service.saveScan({ id: "cancelled-scan", mode: "full", target: "All accessible PC files", startedAt: "2026-08-01T10:00:00.000Z", updatedAt: "2026-08-01T10:00:05.000Z", currentFile: "Scan cancelled", filesCompleted: 4, filesRemaining: 0, totalFiles: 10, progress: 40, currentStage: "Cancelled", status: "cancelled", investigationCount: 1, pausedDurationMs: 0, filesPendingAtCancellation: 5, activeWorkersAtCancellation: 1, cancelRequestedAt: "2026-08-01T10:00:04.000Z", cancelledAt: "2026-08-01T10:00:05.000Z", cancelLatencyMs: 1000, pendingFiles: [] });
     const reloaded = new BackgroundService(path, async () => undefined, () => undefined);
     const snapshot = await reloaded.initialize();
-    assert.equal(snapshot.activeScan?.status, "cancelled");
-    assert.equal(snapshot.activeScan?.filesPendingAtCancellation, 5);
-    assert.equal(snapshot.activeScan?.cancelLatencyMs, 1000);
+    assert.equal(snapshot.activeScan, undefined);
+    const report = await reloaded.scanReport("cancelled-scan");
+    assert.equal(report?.status, "cancelled");
+    assert.equal(report?.completionPercentage, 40);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -215,6 +219,59 @@ test("completed scans clear active state across restart and remain available dur
     assert.equal(restored.activeScan?.id, "replacement-scan");
     assert.equal(restored.lastCompletedScan?.id, "completed-scan");
     assert.equal(restored.lastCompletedScan?.status, "completed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("full scan reports persist separately from scan-scoped assessment history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-scan-report-"));
+  const path = join(directory, "background-settings.json");
+  const scan = { id: "report-scan", mode: "full" as const, performanceMode: "deep" as const, target: "All accessible PC files", startedAt: "2026-08-06T13:42:00.000Z", updatedAt: "2026-08-06T13:44:00.000Z", completedAt: "2026-08-06T13:44:00.000Z", elapsedMs: 120_000, currentFile: "Local analysis complete", filesCompleted: 2, filesRemaining: 0, totalFiles: 2, progress: 100, currentStage: "Complete", status: "completed" as const, investigationCount: 0, pausedDurationMs: 0, forensicCount: 1, inventoryCount: 1, errorCount: 0, cacheSkipped: 0, pendingFiles: [], completedFiles: ["C:\\samples\\safe.exe", "C:\\samples\\photo.jpg"] };
+  try {
+    const service = new BackgroundService(path, async () => undefined, () => undefined);
+    await service.initialize();
+    await service.saveScan(scan);
+    await service.recordAnalysis({ analysis: { filePath: "C:\\samples\\safe.exe", analyzedAt: "2026-08-06T13:43:00.000Z", hashes: { sha256: "a".repeat(64) }, finalRiskScore: 5, recommendation: "ALLOW", metadata: {}, report: { assessment: { schemaVersion: "0.3", verdict: "LIKELY_BENIGN", suspicion: { score: 5, level: "low" }, trust: { score: 90, level: "high" }, confidence: { score: 90, level: "high" }, investigationPriority: "LOW", recommendation: "ALLOW" } } } }, "full", 20, false, undefined, scan.id);
+    await service.completeScan(scan.id);
+    const report = await service.scanReport(scan.id);
+    assert.equal(report?.status, "completed");
+    assert.equal(report?.performanceMode, "deep");
+    assert.equal(report?.processedCount, 2);
+    assert.equal(report?.safeCount, 1);
+    assert.equal((await service.historyPage({ scanId: scan.id })).total, 1);
+    const restarted = new BackgroundService(path, async () => undefined, () => undefined);
+    await restarted.initialize();
+    assert.equal((await restarted.scanReport(scan.id))?.status, "completed");
+    assert.equal((await restarted.historyPage({ scanId: scan.id })).total, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime report updates expose active counters and terminal cancellation retains final duration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "viai-runtime-report-"));
+  const path = join(directory, "background-settings.json");
+  const running = { id: "live-report", mode: "full" as const, performanceMode: "balanced" as const, target: "Common Windows locations", startedAt: "2026-08-06T13:42:00.000Z", updatedAt: "2026-08-06T13:44:00.000Z", currentFile: "C:\\samples\\active.exe", filesCompleted: 17, filesRemaining: 8, totalFiles: 25, progress: 68, currentStage: "Analyzing", status: "running" as const, investigationCount: 1, pausedDurationMs: 0, inventoryCount: 4, errorCount: 0, cacheSkipped: 2, pendingFiles: [] };
+  try {
+    const service = new BackgroundService(path, async () => undefined, () => undefined);
+    await service.initialize();
+    await service.saveScan(running);
+    const live = await service.runtimeScanReport({ ...running, completedFiles: [] });
+    assert.equal(live?.status, "running");
+    assert.equal(live?.processedCount, 17);
+    assert.equal(live?.completionPercentage, 68);
+    assert.equal(live?.performanceMode, "balanced");
+    assert.ok((live?.elapsedMs ?? 0) > 0);
+
+    const cancelled = { ...running, status: "cancelled" as const, currentStage: "Cancelled", filesRemaining: 0, updatedAt: "2026-08-06T13:44:34.000Z", cancelledAt: "2026-08-06T13:44:34.000Z", elapsedMs: 34_000, pendingFiles: [] };
+    await service.saveScan(cancelled);
+    await service.finalizeScan(cancelled.id);
+    const final = await service.scanReport(cancelled.id);
+    assert.equal(final?.status, "cancelled");
+    assert.equal(final?.elapsedMs, 34_000);
+    assert.equal(final?.endedAt, "2026-08-06T13:44:34.000Z");
+    assert.equal(final?.processedCount, 17);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ScanCacheEntry } from "./fileClassification";
+import { type DashboardRecentAssessment, type DashboardRecentQuery, type DashboardSummary, type DashboardTrendBucket, type DashboardTrendPeriod, type HistoryPage, type HistoryQuery, DesktopPersistence } from "./persistence/repositories";
+import { type ScanReport, type ScanReportPage, type ScanReportQuery } from "./persistence/repositories";
 
 type SettingValue = boolean | string | number | string[];
 export type BackgroundSettings = Record<string, SettingValue>;
@@ -26,6 +26,7 @@ export interface BackgroundHistoryRecord {
   report?: Record<string, unknown>;
   trustIndicators?: string[];
   scanDurationMs?: number;
+  scanId?: string;
   scanType?: "quick" | "full" | "folder" | "single-file" | "realtime";
   source?: "download" | "filesystem" | "removable-media";
   deviceId?: string;
@@ -40,6 +41,7 @@ export type ScanStatus = "starting" | "running" | "pausing" | "paused" | "resumi
 export interface PersistedScanState {
   id: string;
   mode: "quick" | "full" | "folder";
+  performanceMode?: "light" | "balanced" | "deep";
   source?: "removable-media";
   deviceId?: string;
   deviceVolume?: string;
@@ -83,7 +85,9 @@ export interface PersistedScanState {
   cancelledAt?: string;
   cancelCompletedAt?: string;
   cancelLatencyMs?: number;
+  failureReason?: string;
   pendingFiles: string[];
+  completedFiles?: string[];
 }
 
 export interface BackgroundSnapshot {
@@ -115,112 +119,87 @@ export const recommendedSettings: BackgroundSettings = Object.freeze({
 export const factorySettings: BackgroundSettings = Object.freeze({ ...recommendedSettings, backgroundProtection: false, runAfterWindowCloses: false, launchOnStartup: false, minimizeToTray: false, automaticDownloadScan: false, automaticallyScanUsb: false, windowsNotifications: false });
 
 export class BackgroundService {
+  private static readonly pathBackedPersistence = new Set<DesktopPersistence>();
+  private readonly persistence: DesktopPersistence;
+  private readonly ownsPersistence: boolean;
   private settings: BackgroundSettings = { ...recommendedSettings };
-  private history: BackgroundHistoryRecord[] = [];
-  private legacyHistory: BackgroundHistoryRecord[] = [];
-  private historyLoaded = false;
   private activeMonitors: string[] = [];
   private activeScan?: PersistedScanState;
   private lastCompletedScan?: PersistedScanState;
   private mutation: Promise<void> = Promise.resolve();
-  private readonly historyPath: string;
-  private readonly scanCachePath: string;
-  private readonly scanCache = new Map<string, ScanCacheEntry>();
-  private scanCacheDirty = false;
-  private historyDirty = false;
-  private historyFlushTimer: NodeJS.Timeout | undefined;
+  private historyPublishTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly dataPath: string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<EngineMonitoringResult | void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void, private readonly engineVersion = "Unavailable") { this.historyPath = join(dirname(dataPath), "background-history.json"); this.scanCachePath = join(dirname(dataPath), "scan-cache.json"); }
+  constructor(persistence: DesktopPersistence | string, private readonly applyEngineMonitoring: (updates: EngineMonitoringUpdate) => Promise<EngineMonitoringResult | void>, private readonly onChanged: (snapshot: BackgroundSnapshot) => void, private readonly engineVersion = "Unavailable") {
+    this.persistence = typeof persistence === "string" ? new DesktopPersistence(persistence) : persistence;
+    this.ownsPersistence = typeof persistence === "string";
+    if (this.ownsPersistence) BackgroundService.pathBackedPersistence.add(this.persistence);
+  }
+
+  static closePathBackedPersistence(): void { for (const persistence of BackgroundService.pathBackedPersistence) persistence.database.close(); BackgroundService.pathBackedPersistence.clear(); }
+  close(): void { if (this.ownsPersistence) { this.persistence.database.close(); BackgroundService.pathBackedPersistence.delete(this.persistence); } }
 
   async initialize(): Promise<BackgroundSnapshot> {
-    const stored = await this.read();
-    this.settings = validateSettings(stored.settings);
-    this.legacyHistory = validateHistory(stored.history);
-    this.activeScan = validateScan(stored.activeScan);
-    this.lastCompletedScan = validateScan(stored.lastCompletedScan);
-    const completedActiveScan = this.activeScan?.status === "completed" ? this.activeScan : undefined;
-    if (completedActiveScan) {
-      this.lastCompletedScan ??= { ...completedActiveScan, pendingFiles: [...completedActiveScan.pendingFiles] };
+    this.settings = validateSettings(this.persistence.loadSettings());
+    this.activeScan = validateScan(this.persistence.loadActiveScan());
+    this.lastCompletedScan = validateScan(this.persistence.loadLastCompletedScan());
+    if (this.activeScan && terminalScan(this.activeScan.status)) {
+      if (this.activeScan.status === "completed") this.lastCompletedScan ??= { ...this.activeScan, pendingFiles: [...this.activeScan.pendingFiles] };
+      this.persistence.finalizeScan(this.activeScan);
       this.activeScan = undefined;
     }
-    await this.loadScanCache();
     await this.apply();
-    if (completedActiveScan) await this.persist();
     return this.snapshot();
   }
 
-  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: this.history.map(historySummary), scanCacheEntries: this.scanCache.size, activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined, lastCompletedScan: this.lastCompletedScan ? publicScan(this.lastCompletedScan) : undefined }; }
+  snapshot(): BackgroundSnapshot { return { settings: { ...this.settings }, history: this.persistence.listHistory({ pageSize: 50 }).items.map(historySummary), scanCacheEntries: this.persistence.countCacheEntries(), activeMonitors: [...this.activeMonitors], activeScan: this.activeScan ? publicScan(this.activeScan) : undefined, lastCompletedScan: this.lastCompletedScan ? publicScan(this.lastCompletedScan) : undefined }; }
   currentScan(): PersistedScanState | undefined { return this.activeScan ? { ...this.activeScan, pendingFiles: [...this.activeScan.pendingFiles] } : undefined; }
-  async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); await this.persist(); return this.publish(); }); }
-  async restoreRecommended(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...recommendedSettings }; await this.apply(); await this.persist(); return this.publish(); }); }
-  async restoreFactory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...factorySettings }; await this.apply(); await this.persist(); return this.publish(); }); }
+  async update(changes: Record<string, unknown>): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings({ ...this.settings, ...changes }); await this.apply(); this.persistence.saveSettings(this.settings); return this.publish(); }); }
+  async restoreRecommended(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...recommendedSettings }; await this.apply(); this.persistence.saveSettings(this.settings); return this.publish(); }); }
+  async restoreFactory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = { ...factorySettings }; await this.apply(); this.persistence.saveSettings(this.settings); return this.publish(); }); }
   exportSettings(): string { return JSON.stringify(this.settings, null, 2); }
-  async importSettings(serialized: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); await this.persist(); return this.publish(); }); }
-  async clearHistory(scope: HistoryClearScope = "all"): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); this.history = scope === "all" ? [] : this.history.filter((record) => riskLevel(record.riskScore) !== scope); await this.persistHistory(); this.publish(); }); }
-  async removeHistory(ids: readonly string[]): Promise<BackgroundSnapshot> {
-    const requested = new Set(ids.filter((id) => typeof id === "string" && id.length > 0 && id.length <= 128));
-    return this.enqueue(async () => {
-      await this.ensureHistoryLoaded();
-      if (requested.size === 0) return this.snapshot();
-      this.history = this.history.filter((record) => !requested.has(record.id));
-      await this.persistHistory();
-      return this.publish();
-    });
-  }
-  async clearAllData(): Promise<void> { await this.enqueue(async () => { this.history = []; this.legacyHistory = []; this.historyLoaded = true; this.historyDirty = false; this.activeScan = undefined; this.lastCompletedScan = undefined; this.scanCache.clear(); this.scanCacheDirty = false; await this.apply(); await rm(this.dataPath, { force: true }); await rm(this.historyPath, { force: true }); await rm(this.scanCachePath, { force: true }); await this.persist(); this.publish(); }); }
-  async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); await this.persist(); return this.publish(); }); }
-  async historyRecord(id: string): Promise<BackgroundHistoryRecord | undefined> { return this.enqueue(async () => { await this.ensureHistoryLoaded(); return this.history.find((record) => record.id === id); }); }
-  async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (scan?.status === "completed") this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; if (options.persist !== false) await this.persist(); return options.publish === false ? this.snapshot() : this.publish(); }); }
-  async mutateActiveScan<T>(scanId: string, mutation: (scan: PersistedScanState) => T, options: SaveScanOptions = {}): Promise<T | undefined> {
-    return this.enqueue(async () => {
-      const scan = this.activeScan;
-      if (!scan || scan.id !== scanId) return undefined;
-      const result = mutation(scan);
-      if (options.persist !== false) await this.persist();
-      if (options.publish !== false) this.publish();
-      return result;
-    });
-  }
-  async completeScan(scanId: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { const scan = this.activeScan; if (!scan || scan.id !== scanId || scan.status !== "completed") return this.snapshot(); this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; this.activeScan = undefined; await this.persist(); return this.publish(); }); }
-  scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.scanCache.get(cacheKey(filePath)); }
-  recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.scanCache.set(cacheKey(filePath), entry); this.scanCacheDirty = true; }
-  async flushScanCache(): Promise<void> { await this.enqueue(async () => { if (!this.scanCacheDirty) return; await mkdir(dirname(this.scanCachePath), { recursive: true }); const temporary = `${this.scanCachePath}.tmp`; await writeFile(temporary, JSON.stringify(Object.fromEntries(this.scanCache)), "utf8"); await rename(temporary, this.scanCachePath); this.scanCacheDirty = false; }); }
+  async importSettings(serialized: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.settings = validateSettings(JSON.parse(serialized)); await this.apply(); this.persistence.saveSettings(this.settings); return this.publish(); }); }
+  async clearHistory(scope: HistoryClearScope = "all"): Promise<void> { await this.enqueue(async () => { this.persistence.clearHistory(scope); this.publish(); }); }
+  async removeHistory(ids: readonly string[]): Promise<BackgroundSnapshot> { return this.enqueue(async () => { const requested = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0 && id.length <= 128))]; this.persistence.removeHistory(requested); return this.publish(); }); }
+  async removeHistoryMatching(query: HistoryQuery, excludedIds: readonly string[] = []): Promise<BackgroundSnapshot> { return this.enqueue(async () => { const excluded = [...new Set(excludedIds.filter((id) => typeof id === "string" && id.length > 0 && id.length <= 128))]; this.persistence.removeHistoryMatching(query, excluded); return this.publish(); }); }
+  async clearAllData(): Promise<void> { await this.enqueue(async () => { this.activeScan = undefined; this.lastCompletedScan = undefined; this.persistence.clearLocalSecurityData(); await this.apply(); this.publish(); }); }
+  async loadHistory(): Promise<BackgroundSnapshot> { return this.enqueue(async () => this.publish()); }
+  async historyPage(query: HistoryQuery): Promise<HistoryPage> { return this.enqueue(async () => this.persistence.listHistory(query)); }
+  async scanReportPage(query: ScanReportQuery): Promise<ScanReportPage> { return this.enqueue(async () => this.persistence.listScanReports(query)); }
+  async scanReport(scanId: string): Promise<ScanReport | undefined> { return this.enqueue(async () => this.persistence.getScanReport(scanId)); }
+  async runtimeScanReport(scan: Omit<PersistedScanState, "pendingFiles">): Promise<ScanReport | undefined> { return this.enqueue(async () => this.persistence.runtimeScanReport({ ...scan, pendingFiles: [] })); }
+  async dashboardSummary(): Promise<DashboardSummary> { return this.enqueue(async () => this.persistence.getDashboardSummary()); }
+  async assessmentTrend(period: DashboardTrendPeriod): Promise<DashboardTrendBucket[]> { return this.enqueue(async () => this.persistence.getAssessmentTrend(period)); }
+  async recentAssessments(query: DashboardRecentQuery): Promise<DashboardRecentAssessment[]> { return this.enqueue(async () => this.persistence.getRecentAssessments(query)); }
+  async historyRecord(id: string): Promise<BackgroundHistoryRecord | undefined> { return this.enqueue(async () => this.persistence.getHistoryRecord(id)); }
+  async saveScan(scan: PersistedScanState | undefined, options: SaveScanOptions = {}): Promise<BackgroundSnapshot> { return this.enqueue(async () => { this.activeScan = scan ? { ...scan, pendingFiles: [...scan.pendingFiles] } : undefined; if (scan?.status === "completed") this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; if (scan && options.persist !== false) this.persistence.saveScan(scan); return options.publish === false ? this.snapshot() : this.publish(); }); }
+  async mutateActiveScan<T>(scanId: string, mutation: (scan: PersistedScanState) => T, options: SaveScanOptions = {}): Promise<T | undefined> { return this.enqueue(async () => { const scan = this.activeScan; if (!scan || scan.id !== scanId) return undefined; const result = mutation(scan); if (options.persist !== false) this.persistence.saveScan(scan); if (options.publish !== false) this.publish(); return result; }); }
+  async reconcileActiveScanReport(scanId: string): Promise<ScanReport | undefined> { return this.enqueue(async () => { const scan = this.activeScan; if (!scan || scan.id !== scanId) return undefined; this.persistence.reconcileScanReport(scan); return this.persistence.getScanReport(scanId); }); }
+  async finalizeScan(scanId: string): Promise<BackgroundSnapshot> { return this.enqueue(async () => { const scan = this.activeScan; if (!scan || scan.id !== scanId || !terminalScan(scan.status)) return this.snapshot(); if (scan.status === "completed") this.lastCompletedScan = { ...scan, pendingFiles: [...scan.pendingFiles] }; this.persistence.finalizeScan(scan); this.activeScan = undefined; return this.publish(); }); }
+  async completeScan(scanId: string): Promise<BackgroundSnapshot> { return this.finalizeScan(scanId); }
+  scanCacheEntry(filePath: string): ScanCacheEntry | undefined { return this.persistence.cacheEntry(filePath); }
+  recordScanCache(filePath: string, entry: ScanCacheEntry): void { this.persistence.putCacheEntry(filePath, entry); }
+  async flushScanCache(): Promise<void> { /* SQLite writes are committed per cache entry. */ }
 
-  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false, device?: { id: string; volume: string; trigger: "arrival" | "manual" }): Promise<string | undefined> {
+  async recordAnalysis(body: unknown, scanType: BackgroundHistoryRecord["scanType"] = "single-file", scanDurationMs?: number, deferPersistence = false, device?: { id: string; volume: string; trigger: "arrival" | "manual" }, scanId?: string): Promise<string | undefined> {
     const analysis = analysisRecord(body);
     if (!analysis) return;
     return this.enqueue(async () => {
-      await this.ensureHistoryLoaded();
       const matchedRules = Array.isArray(analysis.staticAnalysisReport?.matchedRules) ? (analysis.staticAnalysisReport.matchedRules as unknown[]).map((entry: unknown) => typeof entry === "object" && entry && typeof (entry as { id?: unknown }).id === "string" ? (entry as { id: string }).id : undefined).filter((id: string | undefined): id is string => Boolean(id)) : [];
       const report = cloneRecord(analysis);
       const trustIndicators = [typeof analysis.signatureStatus === "string" ? `Signature status: ${analysis.signatureStatus}` : undefined, typeof analysis.signaturePublisher === "string" ? `Publisher: ${analysis.signaturePublisher}` : undefined].filter((value): value is string => Boolean(value));
       const assessment = assessmentSummary(analysis.report?.assessment ?? analysis.staticAnalysisReport?.assessment);
       const source = analysis.evidenceStore?.file?.source === "download" || analysis.evidenceStore?.file?.source === "filesystem" || analysis.evidenceStore?.file?.source === "removable-media" ? analysis.evidenceStore.file.source : undefined;
-      const record: BackgroundHistoryRecord = { id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanType, source, deviceId: device?.id, deviceVolume: device?.volume, deviceScanTrigger: device?.trigger, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined };
-      this.history = [record, ...this.history.filter((entry) => !(entry.kind === "scan" && entry.fileHash === analysis.hashes?.sha256 && entry.occurredAt === analysis.analyzedAt))];
-      if (deferPersistence) {
-        this.historyDirty = true;
-        this.scheduleHistoryFlush();
-      } else {
-        await this.persistHistory();
-        this.publish();
-      }
+      const record: BackgroundHistoryRecord = { id: crypto.randomUUID(), kind: "scan", occurredAt: typeof analysis.analyzedAt === "string" ? analysis.analyzedAt : new Date().toISOString(), fileHash: analysis.hashes?.sha256, filePath: analysis.filePath, riskScore: analysis.finalRiskScore, trustScore: analysis.trustScore, recommendation: assessment?.recommendation ?? analysis.recommendation, assessment, baselineState: typeof analysis.report?.baseline?.state === "string" ? analysis.report.baseline.state : undefined, matchedRules, engineVersion: this.engineVersion, detail: `Static analysis completed: ${assessment?.recommendation ?? analysis.recommendation ?? "MONITOR"}`, report, trustIndicators, scanId, scanType, source, deviceId: device?.id, deviceVolume: device?.volume, deviceScanTrigger: device?.trigger, scanDurationMs, fileExtension: typeof analysis.metadata?.extension === "string" ? analysis.metadata.extension : undefined };
+      this.persistence.putAssessment(record);
+      if (deferPersistence) this.scheduleHistoryPublish();
+      else this.publish();
       return record.id;
     });
   }
 
   async flushHistory(publish = true): Promise<void> {
-    if (this.historyFlushTimer) {
-      clearTimeout(this.historyFlushTimer);
-      this.historyFlushTimer = undefined;
-    }
-    await this.enqueue(async () => {
-      if (this.historyDirty) {
-        await this.persistHistory();
-        this.historyDirty = false;
-      }
-      if (publish) this.publish();
-    });
+    if (this.historyPublishTimer) { clearTimeout(this.historyPublishTimer); this.historyPublishTimer = undefined; }
+    if (publish) await this.enqueue(async () => { this.publish(); });
   }
 
   async setRuntimeMonitor(id: string, active: boolean): Promise<BackgroundSnapshot> {
@@ -230,7 +209,7 @@ export class BackgroundService {
     });
   }
 
-  async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { await this.enqueue(async () => { await this.ensureHistoryLoaded(); if (this.history.some((record) => record.id === id)) return; this.history = [{ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: this.engineVersion, detail }, ...this.history]; await this.persistHistory(); this.publish(); }); }
+  async recordEvent(detail: string, id: string = crypto.randomUUID()): Promise<void> { await this.enqueue(async () => { this.persistence.putAssessment({ id, kind: "realtime-event", occurredAt: new Date().toISOString(), engineVersion: this.engineVersion, detail }); this.publish(); }); }
 
   private async apply(): Promise<void> {
     const enabled = this.settings.backgroundProtection === true;
@@ -283,28 +262,7 @@ export class BackgroundService {
 
   private publish(): BackgroundSnapshot { const snapshot = this.snapshot(); this.onChanged(snapshot); return snapshot; }
   private async enqueue<T>(operation: () => Promise<T>): Promise<T> { const result = this.mutation.then(operation, operation); this.mutation = result.then(() => undefined, () => undefined); return result; }
-  private scheduleHistoryFlush(): void {
-    if (this.historyFlushTimer) return;
-    this.historyFlushTimer = setTimeout(() => {
-      this.historyFlushTimer = undefined;
-      void this.flushHistory(false);
-    }, 500);
-  }
-  private async ensureHistoryLoaded(): Promise<void> {
-    if (this.historyLoaded) return;
-    if (existsSync(this.historyPath)) {
-      try { this.history = validateHistory(JSON.parse(await readFile(this.historyPath, "utf8"))); } catch { this.history = []; }
-    } else {
-      this.history = this.legacyHistory;
-      await this.persistHistory();
-    }
-    this.legacyHistory = [];
-    this.historyLoaded = true;
-  }
-  private async persist(): Promise<void> { await mkdir(dirname(this.dataPath), { recursive: true }); const temporary = `${this.dataPath}.tmp`; const legacy = !this.historyLoaded && this.legacyHistory.length ? { history: this.legacyHistory } : {}; await writeFile(temporary, JSON.stringify({ settings: this.settings, activeScan: this.activeScan, lastCompletedScan: this.lastCompletedScan, ...legacy }, null, 2), "utf8"); await rename(temporary, this.dataPath); }
-  private async persistHistory(): Promise<void> { await mkdir(dirname(this.historyPath), { recursive: true }); const temporary = `${this.historyPath}.tmp`; await writeFile(temporary, JSON.stringify(this.history, null, 2), "utf8"); await rename(temporary, this.historyPath); }
-  private async loadScanCache(): Promise<void> { if (!existsSync(this.scanCachePath)) return; try { const stored = JSON.parse(await readFile(this.scanCachePath, "utf8")) as Record<string, unknown>; for (const [filePath, value] of Object.entries(stored)) { const entry = validateScanCacheEntry(value); if (entry) this.scanCache.set(filePath, entry); } } catch { this.scanCache.clear(); } }
-  private async read(): Promise<StoredBackgroundState> { if (!existsSync(this.dataPath)) return {}; try { return JSON.parse(await readFile(this.dataPath, "utf8")) as StoredBackgroundState; } catch { return {}; } }
+  private scheduleHistoryPublish(): void { if (this.historyPublishTimer) return; this.historyPublishTimer = setTimeout(() => { this.historyPublishTimer = undefined; void this.flushHistory(false); }, 500); }
 }
 
 function validateSettings(value: unknown): BackgroundSettings {
@@ -329,12 +287,13 @@ function validateScanCacheEntry(value: unknown): ScanCacheEntry | undefined { if
 function validateScan(value: unknown): PersistedScanState | undefined {
   if (!value || typeof value !== "object") return undefined;
   const scan = value as Partial<PersistedScanState>;
-  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["starting", "running", "pausing", "paused", "resuming", "cancelling", "finalizing", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string")) return undefined;
+  if (typeof scan.id !== "string" || !["quick", "full", "folder"].includes(scan.mode ?? "") || !["starting", "running", "pausing", "paused", "resuming", "cancelling", "finalizing", "completed", "cancelled", "failed"].includes(scan.status ?? "") || !Array.isArray(scan.pendingFiles) || !scan.pendingFiles.every((file) => typeof file === "string") || scan.completedFiles !== undefined && (!Array.isArray(scan.completedFiles) || !scan.completedFiles.every((file) => typeof file === "string"))) return undefined;
   const number = (candidate: unknown, fallback = 0) => typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? candidate : fallback;
   const priorityRemaining = scan.priorityRemaining && typeof scan.priorityRemaining === "object" ? Object.fromEntries(["critical", "high", "medium", "low", "inventory"].map((band) => [band, number((scan.priorityRemaining as Record<string, unknown>)[band])])) : undefined;
   return {
     id: scan.id,
     mode: scan.mode as PersistedScanState["mode"],
+    performanceMode: scan.performanceMode === "light" || scan.performanceMode === "balanced" || scan.performanceMode === "deep" ? scan.performanceMode : undefined,
     source: scan.source === "removable-media" ? scan.source : undefined,
     deviceId: typeof scan.deviceId === "string" ? scan.deviceId : undefined,
     deviceVolume: typeof scan.deviceVolume === "string" ? scan.deviceVolume : undefined,
@@ -344,10 +303,11 @@ function validateScan(value: unknown): PersistedScanState | undefined {
     updatedAt: typeof scan.updatedAt === "string" ? scan.updatedAt : new Date().toISOString(),
     currentFile: typeof scan.currentFile === "string" ? scan.currentFile : "",
     filesCompleted: number(scan.filesCompleted), filesRemaining: number(scan.filesRemaining), totalFiles: number(scan.totalFiles), progress: Math.min(100, number(scan.progress)), currentStage: typeof scan.currentStage === "string" ? scan.currentStage : "Preparing", status: scan.status as ScanStatus, completedAt: typeof scan.completedAt === "string" ? scan.completedAt : undefined, elapsedMs: typeof scan.elapsedMs === "number" ? number(scan.elapsedMs) : undefined, investigationCount: number(scan.investigationCount), pausedAt: typeof scan.pausedAt === "string" ? scan.pausedAt : undefined, pausedDurationMs: number(scan.pausedDurationMs), estimatedRemainingMs: typeof scan.estimatedRemainingMs === "number" ? number(scan.estimatedRemainingMs) : undefined,
-    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, discoveryComplete: scan.discoveryComplete !== false, filesPendingAtCancellation: number(scan.filesPendingAtCancellation), cancelRequestedAt: typeof scan.cancelRequestedAt === "string" ? scan.cancelRequestedAt : undefined, schedulerStoppedAt: typeof scan.schedulerStoppedAt === "string" ? scan.schedulerStoppedAt : undefined, queueClearedAt: typeof scan.queueClearedAt === "string" ? scan.queueClearedAt : undefined, activeWorkersAtCancellation: number(scan.activeWorkersAtCancellation), lastWorkerStoppedAt: typeof scan.lastWorkerStoppedAt === "string" ? scan.lastWorkerStoppedAt : undefined, cancelledAt: typeof scan.cancelledAt === "string" ? scan.cancelledAt : undefined, cancelCompletedAt: typeof scan.cancelCompletedAt === "string" ? scan.cancelCompletedAt : undefined, cancelLatencyMs: typeof scan.cancelLatencyMs === "number" ? number(scan.cancelLatencyMs) : undefined, pendingFiles: [...scan.pendingFiles],
+    forensicCount: number(scan.forensicCount), inventoryCount: number(scan.inventoryCount), errorCount: number(scan.errorCount), cacheHits: number(scan.cacheHits), cacheMisses: number(scan.cacheMisses), cacheSkipped: number(scan.cacheSkipped), workersActive: number(scan.workersActive), workersTotal: number(scan.workersTotal), peakQueueLength: number(scan.peakQueueLength), throughputPerSecond: number(scan.throughputPerSecond), cpuPercent: number(scan.cpuPercent), memoryBytes: number(scan.memoryBytes), priorityRemaining, discoveryComplete: scan.discoveryComplete !== false, filesPendingAtCancellation: number(scan.filesPendingAtCancellation), cancelRequestedAt: typeof scan.cancelRequestedAt === "string" ? scan.cancelRequestedAt : undefined, schedulerStoppedAt: typeof scan.schedulerStoppedAt === "string" ? scan.schedulerStoppedAt : undefined, queueClearedAt: typeof scan.queueClearedAt === "string" ? scan.queueClearedAt : undefined, activeWorkersAtCancellation: number(scan.activeWorkersAtCancellation), lastWorkerStoppedAt: typeof scan.lastWorkerStoppedAt === "string" ? scan.lastWorkerStoppedAt : undefined, cancelledAt: typeof scan.cancelledAt === "string" ? scan.cancelledAt : undefined, cancelCompletedAt: typeof scan.cancelCompletedAt === "string" ? scan.cancelCompletedAt : undefined, cancelLatencyMs: typeof scan.cancelLatencyMs === "number" ? number(scan.cancelLatencyMs) : undefined, failureReason: typeof scan.failureReason === "string" ? scan.failureReason.slice(0, 512) : undefined, pendingFiles: [...scan.pendingFiles], completedFiles: [...(scan.completedFiles ?? [])],
   };
 }
 function publicScan(scan: PersistedScanState): Omit<PersistedScanState, "pendingFiles"> { const { pendingFiles: _pendingFiles, ...publicState } = scan; return publicState; }
+function terminalScan(status: ScanStatus): boolean { return status === "completed" || status === "cancelled" || status === "failed"; }
 function historySummary(record: BackgroundHistoryRecord): BackgroundHistorySummary { const { report: _report, ...summary } = record; return summary; }
 function cloneRecord(value: Record<string, any>): Record<string, unknown> { return JSON.parse(JSON.stringify(value)) as Record<string, unknown>; }
 function strings(value: SettingValue | undefined): readonly string[] { return Array.isArray(value) ? value : []; }

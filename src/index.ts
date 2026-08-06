@@ -11,10 +11,13 @@ import { UsbMonitor } from "./watcher/usbMonitor.js";
 import { WindowsConfigurationMonitor } from "./watcher/windowsConfigurationMonitor.js";
 
 const root = process.cwd();
+const persistenceDatabasePath = process.env.VIAI_DB_PATH;
+if (!persistenceDatabasePath) throw new Error("VIAI_DB_PATH must be supplied by the trusted desktop host.");
 const trustedPublishers = await loadTrustedPublishers(join(root, "database", "trusted-publishers.json"));
 const pipeline = new AnalysisPipeline({
   rulesDirectory: join(root, "rules"),
-  reputationDatabasePath: join(root, "database", "reputation.json"),
+  reputationDatabasePath: persistenceDatabasePath,
+  baselineDatabasePath: persistenceDatabasePath,
   trustedPublishers,
 });
 const eventManager = new EventManager(pipeline);

@@ -14,7 +14,7 @@ flowchart TD
 
 ## Local Privacy Boundary
 
-All reads are local file reads. The engine performs no HTTP egress, no file upload, and no sample execution. The only server binds to `127.0.0.1`. Hashes and last-seen metadata are saved locally in `database/reputation.json`; it is intentionally ignored by Git.
+All reads are local file reads. The engine performs no HTTP egress, no file upload, and no sample execution. The only server binds to `127.0.0.1`. Active local security state, including hashes and last-seen metadata, is stored in SQLite at Electron `app.getPath("userData")/viai.db`.
 
 ## Evidence and Scoring
 

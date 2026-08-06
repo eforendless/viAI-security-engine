@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { resolve } from "node:path";
 import type { PeParseStatus, SignatureVerificationState } from "../types.js";
 
 export const BASELINE_SCHEMA_VERSION = "0.3";
@@ -37,73 +37,36 @@ interface BaselineDocument {
 }
 
 export class LocalBaselineStore {
-  private transaction = Promise.resolve();
+  private readonly database: DatabaseSync;
 
-  constructor(private readonly filePath: string, private readonly maximumRecords = 10_000) {}
+  constructor(filePath: string, _maximumRecords = 10_000) {
+    this.database = new DatabaseSync(filePath);
+    this.database.exec("PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS baselines (canonical_path TEXT PRIMARY KEY, file_path TEXT NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL, file_type TEXT NOT NULL, signature_state TEXT NOT NULL, signer TEXT, pe_json TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, scan_count INTEGER NOT NULL, engine_version TEXT NOT NULL, rule_set_version TEXT NOT NULL, trust_policy_version TEXT NOT NULL, baseline_schema_version TEXT NOT NULL);");
+  }
 
   async evaluate(identity: BaselineIdentity): Promise<BaselineEvaluation> {
-    return this.enqueue(async () => {
-      const prior = (await this.read()).records.find((record) => canonicalPath(record.filePath) === canonicalPath(identity.filePath));
+    {
+      const row = this.database.prepare("SELECT * FROM baselines WHERE canonical_path = ?").get(canonicalPath(identity.filePath)) as Record<string, unknown> | undefined;
+      const prior = row ? baselineRecord(row) : undefined;
       if (!prior) return { state: "new" };
       if (prior.signer !== identity.signer) return { state: "signer-changed", prior };
       if (prior.signatureState !== identity.signatureState) return { state: "signature-changed", prior };
       if (prior.hash !== identity.hash || prior.size !== identity.size) return { state: "changed", prior };
       return { state: "unchanged", prior };
-    });
-  }
-
-  async record(identity: BaselineIdentity, versions: { engineVersion?: string; ruleSetVersion?: string; trustPolicyVersion?: string } = {}): Promise<void> {
-    await this.enqueue(async () => {
-      const document = await this.read();
-      const now = new Date().toISOString();
-      const key = canonicalPath(identity.filePath);
-      const previous = document.records.find((record) => canonicalPath(record.filePath) === key);
-      const record: BaselineRecord = {
-        ...identity,
-        firstSeen: previous?.firstSeen ?? now,
-        lastSeen: now,
-        scanCount: (previous?.scanCount ?? 0) + 1,
-        engineVersion: versions.engineVersion ?? previous?.engineVersion ?? "unknown",
-        ruleSetVersion: versions.ruleSetVersion ?? previous?.ruleSetVersion ?? "0.3",
-        trustPolicyVersion: versions.trustPolicyVersion ?? previous?.trustPolicyVersion ?? "0.3",
-        baselineSchemaVersion: BASELINE_SCHEMA_VERSION,
-      };
-      const records = [record, ...document.records.filter((entry) => canonicalPath(entry.filePath) !== key)]
-        .sort((left, right) => right.lastSeen.localeCompare(left.lastSeen))
-        .slice(0, this.maximumRecords);
-      await this.write({ schemaVersion: BASELINE_SCHEMA_VERSION, records });
-    });
-  }
-
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.transaction.then(operation, operation);
-    this.transaction = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
-  private async read(): Promise<BaselineDocument> {
-    try {
-      const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<BaselineDocument>;
-      if (parsed.schemaVersion !== BASELINE_SCHEMA_VERSION || !Array.isArray(parsed.records)) return { schemaVersion: BASELINE_SCHEMA_VERSION, records: [] };
-      return { schemaVersion: BASELINE_SCHEMA_VERSION, records: parsed.records.filter(isBaselineRecord) };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return { schemaVersion: BASELINE_SCHEMA_VERSION, records: [] };
-      throw error;
     }
   }
 
-  private async write(document: BaselineDocument): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, JSON.stringify(document), "utf8");
-    await rename(temporary, this.filePath);
+  async record(identity: BaselineIdentity, versions: { engineVersion?: string; ruleSetVersion?: string; trustPolicyVersion?: string } = {}): Promise<void> {
+    {
+      const now = new Date().toISOString();
+      const key = canonicalPath(identity.filePath);
+      this.database.prepare("INSERT INTO baselines (canonical_path, file_path, hash, size, file_type, signature_state, signer, pe_json, first_seen, last_seen, scan_count, engine_version, rule_set_version, trust_policy_version, baseline_schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(canonical_path) DO UPDATE SET hash = excluded.hash, size = excluded.size, file_type = excluded.file_type, signature_state = excluded.signature_state, signer = excluded.signer, pe_json = excluded.pe_json, last_seen = excluded.last_seen, scan_count = baselines.scan_count + 1, engine_version = excluded.engine_version, rule_set_version = excluded.rule_set_version, trust_policy_version = excluded.trust_policy_version, baseline_schema_version = excluded.baseline_schema_version").run(key, identity.filePath, identity.hash, identity.size, identity.fileType, identity.signatureState, identity.signer ?? null, identity.pe ? JSON.stringify(identity.pe) : null, now, now, versions.engineVersion ?? "unknown", versions.ruleSetVersion ?? "0.3", versions.trustPolicyVersion ?? "0.3", BASELINE_SCHEMA_VERSION);
+    }
   }
+  async clear(): Promise<void> { this.database.exec("DELETE FROM baselines"); }
+  close(): void { this.database.close(); }
 }
 
 function canonicalPath(filePath: string): string { return resolve(filePath).replaceAll("/", "\\").toLocaleLowerCase(); }
 
-function isBaselineRecord(value: unknown): value is BaselineRecord {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Partial<BaselineRecord>;
-  return typeof record.filePath === "string" && typeof record.hash === "string" && typeof record.size === "number" && typeof record.fileType === "string" && typeof record.signatureState === "string" && typeof record.firstSeen === "string" && typeof record.lastSeen === "string" && typeof record.scanCount === "number";
-}
+function baselineRecord(row: Record<string, unknown>): BaselineRecord { return { filePath: String(row.file_path), hash: String(row.hash), size: Number(row.size), fileType: String(row.file_type), signatureState: String(row.signature_state) as BaselineIdentity["signatureState"], signer: typeof row.signer === "string" ? row.signer : undefined, pe: typeof row.pe_json === "string" ? JSON.parse(row.pe_json) as BaselineIdentity["pe"] : undefined, firstSeen: String(row.first_seen), lastSeen: String(row.last_seen), scanCount: Number(row.scan_count), engineVersion: String(row.engine_version), ruleSetVersion: String(row.rule_set_version), trustPolicyVersion: String(row.trust_policy_version), baselineSchemaVersion: BASELINE_SCHEMA_VERSION }; }

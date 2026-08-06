@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,7 +19,8 @@ test("compiled VRL rules identify unsigned executable candidates from downloads"
 test("pipeline records local evidence and never executes its input", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-pipeline-"));
   const inputPath = join(directory, "Downloads", "sample.exe");
-  const databasePath = join(directory, "reputation.json");
+  const databasePath = join(directory, "viai.db");
+  let pipeline: AnalysisPipeline | undefined;
   try {
     await writeFile(inputPath, "this is a harmless static-analysis fixture");
   } catch {
@@ -32,7 +33,7 @@ test("pipeline records local evidence and never executes its input", async () =>
       id: "pipeline-test-trust",
       evaluate: async () => [{ id: "PIPELINE_TRUST", weight: 30, evidence: "Pipeline trust evaluator ran.", source: "test" }],
     };
-    const pipeline = new AnalysisPipeline({
+    pipeline = new AnalysisPipeline({
       rulesDirectory: join(process.cwd(), "rules"),
       reputationDatabasePath: databasePath,
       trustAssessmentEngine: new TrustAssessmentEngine(new TrustRegistry([testTrustEvaluator])),
@@ -64,6 +65,7 @@ test("pipeline records local evidence and never executes its input", async () =>
     assert.match(html, /Investigation priority/);
     assert.match(html, /Analysis versions/);
   } finally {
+    pipeline?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -71,12 +73,13 @@ test("pipeline records local evidence and never executes its input", async () =>
 test("pipeline evaluates and records baseline state independently from reputation history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-baseline-pipeline-"));
   const inputPath = join(directory, "sample.bin");
-  const reputationDatabasePath = join(directory, "reputation.json");
-  const baselineDatabasePath = join(directory, "baseline.json");
+  const reputationDatabasePath = join(directory, "viai.db");
+  const baselineDatabasePath = reputationDatabasePath;
   const observedStates: Array<string | undefined> = [];
+  let pipeline: AnalysisPipeline | undefined;
   try {
     await writeFile(inputPath, "bounded static baseline fixture");
-    const pipeline = new AnalysisPipeline({
+    pipeline = new AnalysisPipeline({
       rulesDirectory: join(process.cwd(), "rules"),
       reputationDatabasePath,
       baselineDatabasePath,
@@ -97,52 +100,53 @@ test("pipeline evaluates and records baseline state independently from reputatio
     assert.equal(second.report.baseline?.state, "unchanged");
     assert.match(new HtmlReportGenerator().generate(second), /Evidence confidence/);
     assert.deepEqual(observedStates, ["new", "unchanged"]);
-    assert.ok((await readFile(baselineDatabasePath, "utf8")).includes("sample.bin"));
-    assert.ok((await readFile(reputationDatabasePath, "utf8")).includes(first.hashes.sha256));
+    await pipeline.clearLocalSecurityData();
+    const afterReset = await pipeline.analyze(inputPath);
+    assert.equal(afterReset.baseline?.state, "new");
   } finally {
+    pipeline?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("reputation database retains all parallel updates as valid JSON", async () => {
+test("reputation database retains all parallel updates", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-reputation-"));
-  const databasePath = join(directory, "reputation.json");
+  const databasePath = join(directory, "viai.db");
   const database = new LocalReputationDatabase(databasePath);
   try {
     await Promise.all(Array.from({ length: 32 }, (_, index) => database.recordSeen(`hash-${index}`, `file-${index}.exe`)));
-    const records = JSON.parse(await readFile(databasePath, "utf8")) as Array<{ hash: string }>;
-    assert.equal(records.length, 32);
-    assert.deepEqual(new Set(records.map((record) => record.hash)), new Set(Array.from({ length: 32 }, (_, index) => `hash-${index}`)));
+    assert.equal((await database.lookup("hash-0")).record?.fileName, "file-0.exe");
+    assert.equal((await database.lookup("hash-31")).record?.fileName, "file-31.exe");
   } finally {
+    database.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("reputation database recovers from malformed stored JSON", async () => {
+test("reputation database uses a fresh SQLite store", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-reputation-"));
-  const databasePath = join(directory, "reputation.json");
+  const databasePath = join(directory, "viai.db");
   const database = new LocalReputationDatabase(databasePath);
   try {
-    await writeFile(databasePath, "[] trailing-data", "utf8");
     assert.deepEqual(await database.lookup("missing-hash"), { score: 0, evidence: [] });
     await database.recordSeen("recovered-hash", "recovered.exe");
-    const records = JSON.parse(await readFile(databasePath, "utf8")) as Array<{ hash: string }>;
-    assert.deepEqual(records.map((record) => record.hash), ["recovered-hash"]);
-    assert.ok((await readdir(directory)).some((name) => name.startsWith("reputation.json.corrupt-")));
+    assert.equal((await database.lookup("recovered-hash")).record?.fileName, "recovered.exe");
   } finally {
+    database.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
 test("reputation database clear removes local scan cache", async () => {
   const directory = await mkdtemp(join(tmpdir(), "viai-reputation-"));
-  const databasePath = join(directory, "reputation.json");
+  const databasePath = join(directory, "viai.db");
   const database = new LocalReputationDatabase(databasePath);
   try {
     await database.recordSeen("cached-hash", "cached.exe");
     await database.clear();
-    await assert.rejects(readFile(databasePath, "utf8"));
+    assert.deepEqual(await database.lookup("cached-hash"), { score: 0, evidence: [] });
   } finally {
+    database.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

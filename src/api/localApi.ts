@@ -70,7 +70,7 @@ export function createLocalApi(pipeline: AnalysisPipeline, options: LocalApiOpti
     }
       if (request.method === "POST" && request.url === "/data/reset") {
         try {
-          await pipeline.clearReputation();
+          await pipeline.clearLocalSecurityData();
           response.writeHead(204).end();
         } catch (error) {
           response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : "local data reset failed" }));

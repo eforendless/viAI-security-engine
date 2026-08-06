@@ -6,7 +6,7 @@ function generateUpdateManifest() {
   const packagePath = join(__dirname, "..", "package.json");
   const { version } = JSON.parse(readFileSync(packagePath, "utf8"));
   const releaseDirectory = join(__dirname, "..", "release");
-  const installerName = `viAI.Security.Engine.Setup.${version}.exe`;
+  const installerName = `viAI.Security.Setup.${version}.exe`;
   const installerPath = join(releaseDirectory, installerName);
   const installer = readFileSync(installerPath);
   const installerStats = statSync(installerPath);

@@ -125,6 +125,7 @@ import { Toaster } from "react-hot-toast";
 import "./experience.css";
 import { getMonitoringStatus, probeEngine } from "./api/engineClient";
 import { notificationPath, type NotificationTarget } from "../electron/windowsNotificationService";
+import { windowTitleForPath } from "../electron/applicationIdentity";
 import { AppShell } from "./layout/AppShell";
 import { useSecurityStore } from "./store/securityStore";
 
@@ -134,6 +135,8 @@ const loadFullScan = () => import("./pages/FullScan");
 const loadRealtime = () => import("./pages/Realtime");
 const loadHistory = () => import("./pages/History");
 const loadFileDetails = () => import("./pages/FileDetails");
+const loadScanReports = () => import("./pages/ScanReports");
+const loadScanReportDetails = () => import("./pages/ScanReportDetails");
 const loadSettings = () => import("./pages/Settings");
 const loadAbout = () => import("./pages/About");
 const loadDeviceSecurity = () => import("./pages/DeviceSecurity");
@@ -146,6 +149,8 @@ const FullScan = lazy(loadFullScan);
 const Realtime = lazy(loadRealtime);
 const History = lazy(loadHistory);
 const FileDetails = lazy(loadFileDetails);
+const ScanReports = lazy(loadScanReports);
+const ScanReportDetails = lazy(loadScanReportDetails);
 const Settings = lazy(loadSettings);
 const About = lazy(loadAbout);
 const DeviceSecurity = lazy(loadDeviceSecurity);
@@ -157,6 +162,7 @@ function AppRoutes() {
   const navigate = useNavigate();
   const darkMode = useSecurityStore((state) => state.darkMode);
   useEffect(() => { document.documentElement.dataset.theme = darkMode ? "dark" : "light"; }, [darkMode]);
+  useEffect(() => { document.title = windowTitleForPath(location.pathname); }, [location.pathname]);
   useEffect(() => {
     let active = true;
     const syncBackground = (value: unknown) => {
@@ -169,7 +175,9 @@ function AppRoutes() {
   }, []);
   useEffect(() => window.viai?.scans.onEvent((value) => {
     const update = value as { scan?: Record<string, unknown> };
-    if (update.scan) useSecurityStore.getState().hydrateBackground({}, update.scan);
+    if (!update.scan) return;
+    useSecurityStore.getState().hydrateBackground({}, update.scan);
+    if (update.scan.status === "completed" || update.scan.status === "cancelled" || update.scan.status === "failed") useSecurityStore.getState().hydrateBackground({}, undefined);
   }), []);
   useEffect(() => {
     let cancelled = false;
@@ -204,7 +212,7 @@ function AppRoutes() {
     const timer = window.setTimeout(preload, 700);
     return () => window.clearTimeout(timer);
   }, []);
-  return <Routes location={location}><Route path="/loading-preview" element={<LoadingPreview />} /><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /><Route path="/legal/terms" element={<Legal document="terms" />} /><Route path="/legal/privacy" element={<Legal document="privacy" />} /></Route></Routes>;
+  return <Routes location={location}><Route path="/loading-preview" element={<LoadingPreview />} /><Route element={<AppShell />}><Route path="/" element={<Dashboard />} /><Route path="/quick-scan" element={<QuickScan />} /><Route path="/full-scan" element={<FullScan />} /><Route path="/realtime" element={<Realtime />} /><Route path="/device-security" element={<DeviceSecurity />} /><Route path="/history" element={<History />} /><Route path="/scan-reports" element={<ScanReports />} /><Route path="/scan-reports/:scanId" element={<ScanReportDetails />} /><Route path="/details/:id" element={<FileDetails />} /><Route path="/settings" element={<Settings />} /><Route path="/about" element={<About />} /><Route path="/legal/terms" element={<Legal document="terms" />} /><Route path="/legal/privacy" element={<Legal document="privacy" />} /></Route></Routes>;
 }
 
 function DesktopApp() { return <HashRouter><AppRoutes /><Toaster position="bottom-right" toastOptions={{ style: { borderRadius: 8, fontFamily: "Segoe UI Variable, sans-serif", background: "var(--surface-elevated)", color: "var(--text-primary)", border: "1px solid var(--border-primary)", boxShadow: "0 12px 28px color-mix(in srgb, var(--text-primary) 24%, transparent)" } }} /></HashRouter>; }

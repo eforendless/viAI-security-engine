@@ -37,11 +37,13 @@ export class AnalysisPipeline {
     this.reputationDatabase = new LocalReputationDatabase(options.reputationDatabasePath);
     this.trustAssessmentEngine = options.trustAssessmentEngine ?? createTrustAssessmentEngine(options.trustedPublishers ?? []);
     this.evidencePipeline = options.evidencePipeline ?? createDefaultEvidenceExtractionPipeline();
-    this.baselineStore = options.baselineStore ?? new LocalBaselineStore(options.baselineDatabasePath ?? resolve(dirname(options.reputationDatabasePath), "baseline.json"));
+    this.baselineStore = options.baselineStore ?? new LocalBaselineStore(options.baselineDatabasePath ?? options.reputationDatabasePath);
     this.analysisLimiter = new AnalysisLimiter(options.maxConcurrentAnalyses ?? 2);
   }
 
   async clearReputation(): Promise<void> { await this.reputationDatabase.clear(); }
+  async clearLocalSecurityData(): Promise<void> { await Promise.all([this.reputationDatabase.clear(), this.baselineStore.clear()]); }
+  close(): void { this.reputationDatabase.close(); this.baselineStore.close(); }
 
   onEvidenceEvent(listener: (event: EvidencePipelineEvent) => void): () => void {
     return this.evidencePipeline.onEvent(listener);

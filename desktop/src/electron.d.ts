@@ -24,6 +24,13 @@ declare global {
       };
       background: {
         snapshot(): Promise<unknown>;
+        historyPage(query: { page?: number; pageSize?: number; search?: string; category?: "all" | "needs-investigation" | "monitoring" | "no-action"; scanId?: string }): Promise<unknown>;
+        scanReportPage(query: { page?: number; pageSize?: number; search?: string; status?: "all" | "running" | "paused" | "completed" | "cancelled" | "failed"; performanceMode?: "all" | "light" | "balanced" | "deep" }): Promise<unknown>;
+        scanReport(scanId: string): Promise<unknown>;
+        onScanReportUpdated(listener: (update: unknown) => void): () => void;
+        dashboardSummary(): Promise<unknown>;
+        assessmentTrend(period: "24h" | "7d" | "30d"): Promise<unknown>;
+        recentAssessments(query: { limit?: number; search?: string; category?: "all" | "needs-investigation" | "monitoring" | "no-action" | "legacy" }): Promise<unknown>;
         historyRecord(id: string): Promise<unknown>;
         update(changes: Record<string, unknown>): Promise<unknown>;
         restoreRecommended(): Promise<unknown>;
@@ -32,6 +39,7 @@ declare global {
         importSettings(serialized: string): Promise<unknown>;
         clearHistory(scope?: "all" | "low" | "medium" | "high"): Promise<void>;
         removeHistory(ids: string[]): Promise<unknown>;
+        removeHistoryMatching(query: { search?: string; category?: "all" | "needs-investigation" | "monitoring" | "no-action" }, excludedIds: string[]): Promise<unknown>;
         onChanged(listener: (snapshot: unknown) => void): () => void;
         onCommand(listener: (command: "quick-scan" | "realtime" | "history" | "settings") => void): () => void;
       };
@@ -53,6 +61,7 @@ declare global {
         start(mode: "quick" | "full" | "folder", target?: string): Promise<unknown>;
         pause(): Promise<void>;
         resume(): Promise<void>;
+        continue(scanId: string): Promise<void>;
         cancel(): Promise<void>;
         onEvent(listener: (update: unknown) => void): () => void;
       };

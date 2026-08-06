@@ -1,8 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { promisify } from "node:util";
+import { DesktopPersistence } from "./persistence/repositories";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,11 +49,6 @@ export interface DeviceSecuritySnapshot {
   monitoringState: DeviceMonitoringState;
 }
 
-interface StoredState {
-  devices: DeviceRecord[];
-  history: DeviceHistoryRecord[];
-}
-
 interface PnpDevice {
   DeviceID?: string;
   Name?: string;
@@ -86,6 +79,8 @@ export type DeviceStorageScanTrigger = "arrival" | "manual";
 export type DeviceStorageScanRequest = (device: DeviceRecord, trigger: DeviceStorageScanTrigger) => Promise<void>;
 
 export class DeviceSecurityService {
+  private readonly persistence: DesktopPersistence;
+  private readonly ownsPersistence: boolean;
   private devices: DeviceRecord[] = [];
   private history: DeviceHistoryRecord[] = [];
   private listener?: ChildProcessWithoutNullStreams;
@@ -97,14 +92,18 @@ export class DeviceSecurityService {
   private started = false;
   private monitoringState: DeviceMonitoringState = "disabled";
 
-  constructor(private readonly dataPath: string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true }), private readonly scanStorage: DeviceStorageScanRequest = async () => undefined, private readonly discover: () => Promise<DiscoveredDevice[]> = discoverWindowsDevices) {}
+  constructor(persistence: DesktopPersistence | string, private readonly notify: (snapshot: DeviceSecuritySnapshot, events: readonly DeviceHistoryRecord[]) => void, private readonly monitoringPolicy: () => DeviceMonitoringPolicy = () => ({ monitorUsbStorage: true, monitorUsbInsertion: true, automaticallyScanUsb: true }), private readonly scanStorage: DeviceStorageScanRequest = async () => undefined, private readonly discover: () => Promise<DiscoveredDevice[]> = discoverWindowsDevices) {
+    this.persistence = typeof persistence === "string" ? new DesktopPersistence(persistence) : persistence;
+    this.ownsPersistence = typeof persistence === "string";
+  }
+
+  close(): void { if (this.ownsPersistence) this.persistence.database.close(); }
 
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-    const stored = await this.readState();
-    this.devices = stored.devices;
-    this.history = stored.history;
+    this.devices = this.persistence.loadDevices();
+    this.history = this.persistence.loadDeviceEvents();
     await this.applyMonitoringPolicy();
   }
 
@@ -136,7 +135,7 @@ export class DeviceSecurityService {
   async clearData(): Promise<void> {
     this.devices = [];
     this.history = [];
-    await rm(this.dataPath, { force: true });
+    this.persistence.clearDeviceSecurityData();
     this.notify(this.snapshot(), []);
   }
 
@@ -162,7 +161,7 @@ export class DeviceSecurityService {
     if (!device) return;
     device.isTrusted = trusted;
     const event = this.record(trusted ? "trust-added" : "trust-removed", deviceId, trusted ? `Local trust label added: ${device.friendlyName}` : `Local trust label removed: ${device.friendlyName}`);
-    await this.persist();
+    this.persist();
     this.notify(this.snapshot(), [event]);
   }
 
@@ -238,7 +237,7 @@ export class DeviceSecurityService {
     if (!this.started) return;
     this.devices = next;
     if (events.length > 0) this.history = [...events, ...this.history].slice(0, 2_000);
-    await this.persist();
+    this.persist(events);
     this.notify(this.snapshot(), events);
     for (const event of events.filter((entry) => entry.type === "device-connected")) {
       const device = this.devices.find((entry) => entry.id === event.deviceId);
@@ -271,21 +270,9 @@ export class DeviceSecurityService {
     return event;
   }
 
-  private async persist(): Promise<void> {
-    await mkdir(join(this.dataPath, ".."), { recursive: true });
-    const temporary = `${this.dataPath}.tmp`;
-    await writeFile(temporary, JSON.stringify({ devices: this.devices, history: this.history }, null, 2), "utf8");
-    await rename(temporary, this.dataPath);
-  }
-
-  private async readState(): Promise<StoredState> {
-    if (!existsSync(this.dataPath)) return { devices: [], history: [] };
-    try {
-      const parsed = JSON.parse(await readFile(this.dataPath, "utf8")) as Partial<StoredState>;
-      return { devices: Array.isArray(parsed.devices) ? parsed.devices : [], history: Array.isArray(parsed.history) ? parsed.history : [] };
-    } catch {
-      return { devices: [], history: [] };
-    }
+  private persist(events: readonly DeviceHistoryRecord[] = []): void {
+    this.persistence.replaceDevices(this.devices);
+    this.persistence.appendDeviceEvents(events);
   }
 }
 

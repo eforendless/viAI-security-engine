@@ -30,6 +30,7 @@ test("startup device discovery establishes a baseline before reporting a new rem
     assert.deepEqual(arrivals.map((event) => event.deviceId), ["volume:NEW"]);
   } finally {
     service.stop();
+    service.close();
     await rm(dataPath, { force: true });
   }
 });
